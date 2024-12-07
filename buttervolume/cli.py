@@ -1,24 +1,34 @@
-from bottle import app
-from buttervolume.plugin import FIELDS, LOGLEVEL, SOCKET, USOCKET, TIMER
-from buttervolume.plugin import SCHEDULE, SCHEDULE_DISABLED
-from buttervolume.plugin import VOLUMES_PATH, SNAPSHOTS_PATH
-from datetime import datetime, timedelta
-from os.path import dirname, join, realpath
-from requests.exceptions import ConnectionError
-from subprocess import CalledProcessError
-from waitress import serve
-from webtest import TestApp
 import argparse
 import csv
 import json
 import logging
 import os
-import requests_unixsocket
 import signal
 import sys
 import threading
 import traceback
 import urllib.parse
+from datetime import datetime, timedelta
+from os.path import dirname, join, realpath
+from subprocess import CalledProcessError
+
+import requests_unixsocket
+from bottle import app
+from requests.exceptions import ConnectionError
+from waitress import serve
+from webtest import TestApp
+
+from buttervolume.plugin import (
+    FIELDS,
+    LOGLEVEL,
+    SCHEDULE,
+    SCHEDULE_DISABLED,
+    SNAPSHOTS_PATH,
+    SOCKET,
+    TIMER,
+    USOCKET,
+    VOLUMES_PATH,
+)
 
 VERSION = open(join(dirname(realpath(__file__)), "VERSION")).read().strip()
 logging.basicConfig(level=LOGLEVEL)
@@ -342,7 +352,7 @@ def scheduler(event, config=SCHEDULE, test=False, timer=TIMER):
         else:
             try:
                 runjobs(config, test, timer)
-            except:
+            except Exception:
                 log.critical("An exception occured in the scheduling job")
                 log.critical(traceback.format_exc())
 
@@ -374,6 +384,7 @@ def run(_, test=False):
     signal.signal(signal.SIGTERM, lambda *_: shutdown(thread, event))
     signal.signal(signal.SIGHUP, lambda *_: shutdown(thread, event))
     signal.signal(signal.SIGQUIT, lambda *_: shutdown(thread, event))
+    signal.signal(signal.SIGURG, lambda *_: shutdown(thread, event))
     # listen to requests
     print("Listening to requests on %s..." % SOCKET)
     serve(app, unix_socket=SOCKET, unix_socket_perms="660")
