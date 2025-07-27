@@ -72,14 +72,6 @@ def run_safe(cmd_list, check=True, stdout=PIPE, stderr=PIPE, timeout=60):
         raise BtrfsError(f"BTRFS command timed out after {timeout}s: {cmd_str}")
 
 
-def run(cmd, shell=True, check=True, stdout=PIPE, stderr=PIPE):
-    try:
-        return _run(cmd, shell=shell, check=check, stdout=stdout, stderr=stderr).stdout.decode()
-    except CalledProcessError as e:
-        stderr_output = e.stderr.decode() if e.stderr else 'No error output'
-        raise BtrfsError(
-            f"BTRFS command failed: {cmd}\nStderr: {stderr_output}"
-        )
 
 
 
