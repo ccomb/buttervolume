@@ -29,7 +29,7 @@ class InvalidPathError(BtrfsError):
 
 
 def btrfs_operation(error_type, error_msg, timeout=60):
-    """Decorator that runs BTRFS commands with timeout and converts exceptions to specific error types"""
+    """Decorator that runs BTRFS commands with timeout and converts exceptions to specific types."""
     def decorator(func):
         def wrapper(self, *args, **kwargs):
             # Call the function to get the command
@@ -41,12 +41,15 @@ def btrfs_operation(error_type, error_msg, timeout=60):
                 ).stdout.decode()
             except CalledProcessError as e:
                 cmd_str = " ".join(cmd_list)
+                stderr_output = e.stderr.decode() if e.stderr else 'No error output'
                 raise error_type(
-                    f"{error_msg}: BTRFS command failed: {cmd_str}\nStderr: {e.stderr.decode() if e.stderr else 'No error output'}"
+                    f"{error_msg}: BTRFS command failed: {cmd_str}\nStderr: {stderr_output}"
                 )
             except TimeoutExpired:
                 cmd_str = " ".join(cmd_list)
-                raise error_type(f"{error_msg}: BTRFS command timed out after {timeout}s: {cmd_str}")
+                raise error_type(
+                    f"{error_msg}: BTRFS command timed out after {timeout}s: {cmd_str}"
+                )
             except Exception as e:
                 raise error_type(f"{error_msg} - unexpected error: {str(e)}")
         return wrapper
@@ -60,8 +63,9 @@ def run_safe(cmd_list, check=True, stdout=PIPE, stderr=PIPE, timeout=60):
         ).stdout.decode()
     except CalledProcessError as e:
         cmd_str = " ".join(cmd_list)
+        stderr_output = e.stderr.decode() if e.stderr else 'No error output'
         raise BtrfsError(
-            f"BTRFS command failed: {cmd_str}\nStderr: {e.stderr.decode() if e.stderr else 'No error output'}"
+            f"BTRFS command failed: {cmd_str}\nStderr: {stderr_output}"
         )
     except TimeoutExpired:
         cmd_str = " ".join(cmd_list)
@@ -72,22 +76,12 @@ def run(cmd, shell=True, check=True, stdout=PIPE, stderr=PIPE):
     try:
         return _run(cmd, shell=shell, check=check, stdout=stdout, stderr=stderr).stdout.decode()
     except CalledProcessError as e:
+        stderr_output = e.stderr.decode() if e.stderr else 'No error output'
         raise BtrfsError(
-            f"BTRFS command failed: {cmd}\nStderr: {e.stderr.decode() if e.stderr else 'No error output'}"
+            f"BTRFS command failed: {cmd}\nStderr: {stderr_output}"
         )
 
 
-def run_safe(cmd_list, check=True, stdout=PIPE, stderr=PIPE):
-    """Run command safely with argument list instead of shell=True"""
-    try:
-        return _run(
-            cmd_list, shell=False, check=check, stdout=stdout, stderr=stderr
-        ).stdout.decode()
-    except CalledProcessError as e:
-        cmd_str = " ".join(cmd_list)
-        raise BtrfsError(
-            f"BTRFS command failed: {cmd_str}\nStderr: {e.stderr.decode() if e.stderr else 'No error output'}"
-        )
 
 
 def validate_path(path):
@@ -194,8 +188,10 @@ class Subvolume:
         else:
             # Silent failure mode
             try:
-                return run_safe(["btrfs", "subvolume", "delete", self.path], check=False, timeout=300)
-            except:
+                return run_safe(
+                    ["btrfs", "subvolume", "delete", self.path], check=False, timeout=300
+                )
+            except Exception:
                 return ""
 
 

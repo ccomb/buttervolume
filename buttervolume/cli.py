@@ -115,14 +115,11 @@ def scheduled(args):
         )
         scheduled = get_from(resp, "Schedule")
         if scheduled:
-            print(
-                "\n".join(
-                    [
-                        f"{job['Action']} {job['Timer']} {job['Name']} {'(paused)' if job.get('Active')=='False' else ''}"
-                        for job in scheduled
-                    ]
-                )
-            )
+            formatted_jobs = []
+            for job in scheduled:
+                status = '(paused)' if job.get('Active') == 'False' else ''
+                formatted_jobs.append(f"{job['Action']} {job['Timer']} {job['Name']} {status}")
+            print("\n".join(formatted_jobs))
         return scheduled
     elif args.action == "pause":
         resp = Session().post(
@@ -407,7 +404,10 @@ def main():
 
     parser_schedule = subparsers.add_parser(
         "schedule",
-        help="Schedule, unschedule, pause or resume a periodic snapshot, replication, synchronization or purge",
+        help=(
+            "Schedule, unschedule, pause or resume a periodic snapshot, "
+            "replication, synchronization or purge"
+        ),
     )
     parser_schedule.add_argument(
         "action",
@@ -423,7 +423,10 @@ def main():
         "timer",
         metavar="timer",
         nargs=1,
-        help="Time span in minutes between two actions. Or: '0' (or 'delete') to 'remove' the schedule, 'pause' to pause, 'resume' to resume",
+        help=(
+            "Time span in minutes between two actions. Or: '0' (or 'delete') to "
+            "'remove' the schedule, 'pause' to pause, 'resume' to resume"
+        ),
     )
     parser_schedule.add_argument(
         "name",

@@ -216,8 +216,10 @@ def run_btrfs_send_receive(
     send_proc.wait()
 
     if send_proc.returncode != 0 or receive_proc.returncode != 0:
+        error_details = receive_stderr.decode()
         raise ReplicationError(
-            f"btrfs send/receive failed (send: {send_proc.returncode}, receive: {receive_proc.returncode}): {receive_stderr.decode()}"
+            f"btrfs send/receive failed (send: {send_proc.returncode}, "
+            f"receive: {receive_proc.returncode}): {error_details}"
         )
 
     return receive_stdout.decode()
@@ -382,7 +384,8 @@ def volume_sync(req):
             ]
             log.debug("Running %r", cmd)
             try:
-                btrfs.run_safe(cmd, check=True, stdout=PIPE, stderr=PIPE, timeout=600)  # 10 min timeout for rsync
+                # 10 min timeout for rsync
+                btrfs.run_safe(cmd, check=True, stdout=PIPE, stderr=PIPE, timeout=600)
             except Exception as ex:
                 err = getattr(ex, "stderr", ex)
                 error_message = f"Error while rsync {volume_name} from {remote_host}: {err}"
@@ -733,7 +736,7 @@ def compute_purges(snapshots, pattern, now):
                 int((now - datetime.strptime(s.split("@")[1], DTFORMAT)).total_seconds()) / 60
             )
             valid_snapshots.append(s)
-        except:
+        except Exception:
             log.info("Skipping purge of %s with invalid date format", s)
             continue
     if not valid_snapshots:
