@@ -153,24 +153,26 @@ def validate_hostname(hostname):
     return hostname
 
 
-def safe_plugin_call(func, *args, **kwargs):
-    """Generic safe wrapper for plugin functions that return {"Err": "..."} format"""
-    try:
-        result = func(*args, **kwargs)
-        return result if isinstance(result, dict) else {"Err": ""}
-    except (
-        ValidationError,
-        VolumeNotFoundError,
-        SnapshotNotFoundError,
-        ReplicationError,
-        BtrfsSubvolumeError,
-        BtrfsFilesystemError,
-        BtrfsError,
-    ) as e:
-        return {"Err": str(e)}
-    except Exception as e:
-        log.error("Unexpected error in %s: %s", func.__name__, str(e))
-        return {"Err": f"Unexpected error: {str(e)}"}
+def safe_handler(func):
+    """Decorator that provides unified error handling for plugin operations"""
+    def wrapper(*args, **kwargs):
+        try:
+            result = func(*args, **kwargs)
+            return result if isinstance(result, dict) else {"Err": ""}
+        except (
+            ValidationError,
+            VolumeNotFoundError,
+            SnapshotNotFoundError,
+            ReplicationError,
+            BtrfsSubvolumeError,
+            BtrfsFilesystemError,
+            BtrfsError,
+        ) as e:
+            return {"Err": str(e)}
+        except Exception as e:
+            log.error("Unexpected error in %s: %s", func.__name__, str(e))
+            return {"Err": f"Unexpected error: {str(e)}"}
+    return wrapper
 
 
 def run_btrfs_send_receive(
@@ -240,28 +242,26 @@ def plugin_activate(_):
 
 @route("/VolumeDriver.Create", ["POST"])
 @add_debug_log
+@safe_handler
 def volume_create(req):
-    def _create_volume():
-        name = req["Name"]
-        opts = req.get("Opts", {}) or {}
+    name = req["Name"]
+    opts = req.get("Opts", {}) or {}
 
-        validate_volume_name(name)
+    validate_volume_name(name)
 
-        volpath = join(VOLUMES_PATH, name)
-        # volume already exists?
-        if name in [v["Name"] for v in list_volumes()["Volumes"]]:
-            return {"Err": ""}
-
-        cow = opts.get("copyonwrite", "true").lower()
-        if cow not in ["true", "false"]:
-            raise ValidationError(
-                f'Invalid option for copyonwrite: {cow}. Set to "true" or "false".'
-            )
-
-        btrfs.Subvolume(volpath).create(cow=cow == "true")
+    volpath = join(VOLUMES_PATH, name)
+    # volume already exists?
+    if name in [v["Name"] for v in list_volumes()["Volumes"]]:
         return {"Err": ""}
 
-    return safe_plugin_call(_create_volume)
+    cow = opts.get("copyonwrite", "true").lower()
+    if cow not in ["true", "false"]:
+        raise ValidationError(
+            f'Invalid option for copyonwrite: {cow}. Set to "true" or "false".'
+        )
+
+    btrfs.Subvolume(volpath).create(cow=cow == "true")
+    return {"Err": ""}
 
 
 def volumepath(name):
@@ -273,26 +273,22 @@ def volumepath(name):
 
 @route("/VolumeDriver.Mount", ["POST"])
 @add_debug_log
+@safe_handler
 def volume_mount(req):
-    def _mount_volume():
-        name = req["Name"]
-        validate_volume_name(name)
-        path = volumepath(name)
-        return {"Mountpoint": path, "Err": ""}
-
-    return safe_plugin_call(_mount_volume)
+    name = req["Name"]
+    validate_volume_name(name)
+    path = volumepath(name)
+    return {"Mountpoint": path, "Err": ""}
 
 
 @route("/VolumeDriver.Path", ["POST"])
 @add_debug_log
+@safe_handler
 def volume_path(req):
-    def _get_volume_path():
-        name = req["Name"]
-        validate_volume_name(name)
-        path = volumepath(name)
-        return {"Mountpoint": path, "Err": ""}
-
-    return safe_plugin_call(_get_volume_path)
+    name = req["Name"]
+    validate_volume_name(name)
+    path = volumepath(name)
+    return {"Mountpoint": path, "Err": ""}
 
 
 @route("/VolumeDriver.Unmount", ["POST"])
@@ -303,29 +299,25 @@ def volume_unmount(_):
 
 @route("/VolumeDriver.Get", ["POST"])
 @add_debug_log
+@safe_handler
 def volume_get(req):
-    def _get_volume():
-        name = req["Name"]
-        validate_volume_name(name)
-        path = volumepath(name)
-        return {"Volume": {"Name": name, "Mountpoint": path}, "Err": ""}
-
-    return safe_plugin_call(_get_volume)
+    name = req["Name"]
+    validate_volume_name(name)
+    path = volumepath(name)
+    return {"Volume": {"Name": name, "Mountpoint": path}, "Err": ""}
 
 
 @route("/VolumeDriver.Remove", ["POST"])
 @add_debug_log
+@safe_handler
 def volume_remove(req):
-    def _remove_volume():
-        name = req["Name"]
-        validate_volume_name(name)
-        path = join(VOLUMES_PATH, name)
-        if not btrfs.Subvolume(path).exists():
-            raise VolumeNotFoundError(f"Volume '{name}' not found")
-        btrfs.Subvolume(path).delete()
-        return {"Err": ""}
-
-    return safe_plugin_call(_remove_volume)
+    name = req["Name"]
+    validate_volume_name(name)
+    path = join(VOLUMES_PATH, name)
+    if not btrfs.Subvolume(path).exists():
+        raise VolumeNotFoundError(f"Volume '{name}' not found")
+    btrfs.Subvolume(path).delete()
+    return {"Err": ""}
 
 
 @route("/VolumeDriver.List", ["POST"])
@@ -489,24 +481,21 @@ def snapshot_send(req):
 
 @route("/VolumeDriver.Snapshot", ["POST"])
 @add_debug_log
+@safe_handler
 def volume_snapshot(req):
     """snapshot a volume in the SNAPSHOTS dir"""
+    name = req["Name"]
+    validate_volume_name(name)
 
-    def _create_snapshot():
-        name = req["Name"]
-        validate_volume_name(name)
+    path = join(VOLUMES_PATH, name)
+    if not os.path.exists(path) or not btrfs.Subvolume(path).exists():
+        raise VolumeNotFoundError(f"Volume '{name}' not found")
 
-        path = join(VOLUMES_PATH, name)
-        if not os.path.exists(path) or not btrfs.Subvolume(path).exists():
-            raise VolumeNotFoundError(f"Volume '{name}' not found")
+    timestamped = "{}@{}".format(name, datetime.now().strftime(DTFORMAT))
+    snapshot_path = join(SNAPSHOTS_PATH, timestamped)
 
-        timestamped = "{}@{}".format(name, datetime.now().strftime(DTFORMAT))
-        snapshot_path = join(SNAPSHOTS_PATH, timestamped)
-
-        btrfs.Subvolume(path).snapshot(snapshot_path, readonly=True)
-        return {"Err": "", "Snapshot": timestamped}
-
-    return safe_plugin_call(_create_snapshot)
+    btrfs.Subvolume(path).snapshot(snapshot_path, readonly=True)
+    return {"Err": "", "Snapshot": timestamped}
 
 
 @route("/VolumeDriver.Snapshot.List", ["GET"])
@@ -518,38 +507,34 @@ def snapshot_list(_):
 
 @route("/VolumeDriver.Snapshot.List/<name>", ["GET"])
 @add_debug_log
+@safe_handler
 def snapshot_sublist(_, name=""):
-    def _list_volume_snapshots():
-        # Validate volume name if provided
-        if name:
-            validate_volume_name(name)
+    # Validate volume name if provided
+    if name:
+        validate_volume_name(name)
 
-        snapshots = os.listdir(SNAPSHOTS_PATH)
-        if name:
-            snapshots = [s for s in snapshots if s.startswith(name + "@")]
-        return {"Err": "", "Snapshots": snapshots}
-
-    return safe_plugin_call(_list_volume_snapshots)
+    snapshots = os.listdir(SNAPSHOTS_PATH)
+    if name:
+        snapshots = [s for s in snapshots if s.startswith(name + "@")]
+    return {"Err": "", "Snapshots": snapshots}
 
 
 @route("/VolumeDriver.Snapshot.Remove", ["POST"])
 @add_debug_log
+@safe_handler
 def snapshot_delete(req):
-    def _delete_snapshot():
-        name = req["Name"]
+    name = req["Name"]
 
-        # Basic validation of snapshot name format
-        if "@" not in name:
-            raise ValidationError("Invalid snapshot name format")
+    # Basic validation of snapshot name format
+    if "@" not in name:
+        raise ValidationError("Invalid snapshot name format")
 
-        path = join(SNAPSHOTS_PATH, name)
-        if not os.path.exists(path):
-            raise SnapshotNotFoundError(f"Snapshot '{name}' not found")
+    path = join(SNAPSHOTS_PATH, name)
+    if not os.path.exists(path):
+        raise SnapshotNotFoundError(f"Snapshot '{name}' not found")
 
-        btrfs.Subvolume(path).delete()
-        return {"Err": ""}
-
-    return safe_plugin_call(_delete_snapshot)
+    btrfs.Subvolume(path).delete()
+    return {"Err": ""}
 
 
 @route("/VolumeDriver.Schedule", ["POST"])
@@ -621,126 +606,117 @@ def schedule_enable(_):
 
 @route("/VolumeDriver.Snapshot.Restore", ["POST"])
 @add_debug_log
+@safe_handler
 def snapshot_restore(req):
     """
     Snapshot a volume and overwrite it with the specified snapshot.
     """
+    snapshot_name = req["Name"]
+    target_name = req.get("Target")
 
-    def _restore_snapshot():
-        snapshot_name = req["Name"]
-        target_name = req.get("Target")
+    if "@" not in snapshot_name:
+        # we're passing the name of the volume. Use the latest snapshot.
+        volume_name = snapshot_name
+        validate_volume_name(volume_name)
+        snapshots = os.listdir(SNAPSHOTS_PATH)
+        snapshots = [s for s in snapshots if s.startswith(volume_name + "@")]
+        if not snapshots:
+            raise SnapshotNotFoundError(f"No snapshots found for volume '{volume_name}'")
+        snapshot_name = sorted(snapshots)[-1]
 
-        if "@" not in snapshot_name:
-            # we're passing the name of the volume. Use the latest snapshot.
-            volume_name = snapshot_name
-            validate_volume_name(volume_name)
-            snapshots = os.listdir(SNAPSHOTS_PATH)
-            snapshots = [s for s in snapshots if s.startswith(volume_name + "@")]
-            if not snapshots:
-                raise SnapshotNotFoundError(f"No snapshots found for volume '{volume_name}'")
-            snapshot_name = sorted(snapshots)[-1]
+    snapshot_path = join(SNAPSHOTS_PATH, snapshot_name)
+    if not os.path.exists(snapshot_path):
+        raise SnapshotNotFoundError(f"Snapshot '{snapshot_name}' not found")
 
-        snapshot_path = join(SNAPSHOTS_PATH, snapshot_name)
-        if not os.path.exists(snapshot_path):
-            raise SnapshotNotFoundError(f"Snapshot '{snapshot_name}' not found")
+    snapshot = btrfs.Subvolume(snapshot_path)
+    target_name = target_name or snapshot_name.split("@")[0]
+    validate_volume_name(target_name)
 
-        snapshot = btrfs.Subvolume(snapshot_path)
-        target_name = target_name or snapshot_name.split("@")[0]
-        validate_volume_name(target_name)
+    target_path = join(VOLUMES_PATH, target_name)
+    volume = btrfs.Subvolume(target_path)
+    res = {"Err": ""}
 
-        target_path = join(VOLUMES_PATH, target_name)
-        volume = btrfs.Subvolume(target_path)
-        res = {"Err": ""}
+    if not snapshot.exists():
+        raise SnapshotNotFoundError(
+            f"Snapshot '{snapshot_name}' is not a valid BTRFS subvolume"
+        )
 
-        if not snapshot.exists():
-            raise SnapshotNotFoundError(
-                f"Snapshot '{snapshot_name}' is not a valid BTRFS subvolume"
-            )
+    if volume.exists():
+        # backup and delete
+        timestamp = datetime.now().strftime(DTFORMAT)
+        stamped_name = "{}@{}".format(target_name, timestamp)
+        stamped_path = join(SNAPSHOTS_PATH, stamped_name)
+        volume.snapshot(stamped_path, readonly=True)
+        res["VolumeBackup"] = stamped_name
+        volume.delete()
 
-        if volume.exists():
-            # backup and delete
-            timestamp = datetime.now().strftime(DTFORMAT)
-            stamped_name = "{}@{}".format(target_name, timestamp)
-            stamped_path = join(SNAPSHOTS_PATH, stamped_name)
-            volume.snapshot(stamped_path, readonly=True)
-            res["VolumeBackup"] = stamped_name
-            volume.delete()
-
-        snapshot.snapshot(target_path)
-        return res
-
-    return safe_plugin_call(_restore_snapshot)
+    snapshot.snapshot(target_path)
+    return res
 
 
 @route("/VolumeDriver.Clone", ["POST"])
 @add_debug_log
+@safe_handler
 def snapshot_clone(req):
     """
     Create a new volume as clone from another.
     """
+    volumename = req["Name"]
+    targetname = req.get("Target")
 
-    def _clone_volume():
-        volumename = req["Name"]
-        targetname = req.get("Target")
+    # Validate input names
+    validate_volume_name(volumename)
+    validate_volume_name(targetname)
 
-        # Validate input names
-        validate_volume_name(volumename)
-        validate_volume_name(targetname)
+    volumepath = join(VOLUMES_PATH, volumename)
+    targetpath = join(VOLUMES_PATH, targetname)
 
-        volumepath = join(VOLUMES_PATH, volumename)
-        targetpath = join(VOLUMES_PATH, targetname)
+    volume = btrfs.Subvolume(volumepath)
+    if not volume.exists():
+        raise VolumeNotFoundError(f"Source volume '{volumename}' not found")
 
-        volume = btrfs.Subvolume(volumepath)
-        if not volume.exists():
-            raise VolumeNotFoundError(f"Source volume '{volumename}' not found")
+    # Check if target already exists
+    target_volume = btrfs.Subvolume(targetpath)
+    if target_volume.exists():
+        raise ValidationError(f"Target volume '{targetname}' already exists")
 
-        # Check if target already exists
-        target_volume = btrfs.Subvolume(targetpath)
-        if target_volume.exists():
-            raise ValidationError(f"Target volume '{targetname}' already exists")
-
-        volume.snapshot(targetpath)
-        return {"Err": "", "VolumeCloned": targetname}
-
-    return safe_plugin_call(_clone_volume)
+    volume.snapshot(targetpath)
+    return {"Err": "", "VolumeCloned": targetname}
 
 
 @route("/VolumeDriver.Snapshots.Purge", ["POST"])
 @add_debug_log
+@safe_handler
 def snapshots_purge(req):
     """
     Purge snapshots with a retention pattern
     (see cli help)
     """
+    volume_name = req["Name"]
+    dryrun = req.get("Dryrun", False)
 
-    def _purge_snapshots():
-        volume_name = req["Name"]
-        dryrun = req.get("Dryrun", False)
+    # Validate volume name
+    validate_volume_name(volume_name)
 
-        # Validate volume name
-        validate_volume_name(volume_name)
+    # convert the pattern to seconds, check validity and reorder
+    units = {"m": 1, "h": 60, "d": 60 * 24, "w": 60 * 24 * 7, "y": 60 * 24 * 365}
+    try:
+        pattern = sorted(int(i[:-1]) * units[i[-1]] for i in req["Pattern"].split(":"))
+        assert len(pattern) >= 2
+    except (ValueError, KeyError, AssertionError):
+        raise ValidationError(f"Invalid purge pattern: {req['Pattern']}")
 
-        # convert the pattern to seconds, check validity and reorder
-        units = {"m": 1, "h": 60, "d": 60 * 24, "w": 60 * 24 * 7, "y": 60 * 24 * 365}
-        try:
-            pattern = sorted(int(i[:-1]) * units[i[-1]] for i in req["Pattern"].split(":"))
-            assert len(pattern) >= 2
-        except (ValueError, KeyError, AssertionError):
-            raise ValidationError(f"Invalid purge pattern: {req['Pattern']}")
+    # snapshots related to the volume, more recents first
+    snapshots = (s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(volume_name + "@"))
 
-        # snapshots related to the volume, more recents first
-        snapshots = (s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(volume_name + "@"))
+    for snapshot in compute_purges(snapshots, pattern, datetime.now()):
+        if dryrun:
+            log.info("(Dry run) Would delete snapshot {}".format(snapshot))
+        else:
+            btrfs.Subvolume(join(SNAPSHOTS_PATH, snapshot)).delete()
+            log.info("Deleted snapshot {}".format(snapshot))
 
-        for snapshot in compute_purges(snapshots, pattern, datetime.now()):
-            if dryrun:
-                log.info("(Dry run) Would delete snapshot {}".format(snapshot))
-            else:
-                btrfs.Subvolume(join(SNAPSHOTS_PATH, snapshot)).delete()
-                log.info("Deleted snapshot {}".format(snapshot))
-
-        return {"Err": ""}
-
-    return safe_plugin_call(_purge_snapshots)
+    return {"Err": ""}
 
 
 def compute_purges(snapshots, pattern, now):
