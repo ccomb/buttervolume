@@ -65,23 +65,31 @@ TEST_REMOTE_PATH = getconfig(config, "TEST_REMOTE_PATH", "/var/lib/buttervolume/
 SCHEDULE = getconfig(config, "SCHEDULE", "/etc/buttervolume/schedule.csv")
 SCHEDULE_DISABLED = f"{SCHEDULE}.disabled"
 FIELDS = ["Name", "Action", "Timer", "Active"]
+# Support both old and new plugin names for backward compatibility  
 DRIVERNAME = getconfig(config, "DRIVERNAME", "ccomb/buttervolume:latest")
+LEGACY_DRIVERNAME = "anybox/buttervolume:latest"
 RUNPATH = getconfig(config, "RUNPATH", "/run/docker")
 SOCKET = getconfig(config, "SOCKET", os.path.join(RUNPATH, "plugins", "btrfs.sock"))
 USOCKET = SOCKET
 if not os.path.exists(USOCKET):
     # socket path on the host or another container
-    plugins = json.loads(
-        run(
-            f"docker plugin inspect {DRIVERNAME}",
-            shell=True,
-            capture_output=True,
-        ).stdout.decode()
-        or "[]"
-    )
-    if plugins:
-        plugin = plugins[0]  # can we have several plugins with the same name?
-        USOCKET = os.path.join(RUNPATH, "plugins", plugin["Id"], "btrfs.sock")
+    # Try current plugin name first, then legacy name for backward compatibility
+    for driver_name in [DRIVERNAME, LEGACY_DRIVERNAME]:
+        try:
+            plugins = json.loads(
+                run(
+                    f"docker plugin inspect {driver_name}",
+                    shell=True,
+                    capture_output=True,
+                ).stdout.decode()
+                or "[]"
+            )
+            if plugins:
+                plugin = plugins[0]  # can we have several plugins with the same name?
+                USOCKET = os.path.join(RUNPATH, "plugins", plugin["Id"], "btrfs.sock")
+                break
+        except Exception:
+            continue  # Try next driver name
 
 TIMER = int(getconfig(config, "TIMER", 60))
 DTFORMAT = getconfig(config, "DTFORMAT", "%Y-%m-%dT%H:%M:%S.%f")
