@@ -155,6 +155,7 @@ def validate_hostname(hostname):
 
 def safe_handler(func):
     """Decorator that provides unified error handling for plugin operations"""
+
     def wrapper(*args, **kwargs):
         try:
             result = func(*args, **kwargs)
@@ -172,6 +173,7 @@ def safe_handler(func):
         except Exception as e:
             log.error("Unexpected error in %s: %s", func.__name__, str(e))
             return {"Err": f"Unexpected error: {str(e)}"}
+
     return wrapper
 
 
@@ -183,7 +185,7 @@ def run_btrfs_send_receive(
     validate_hostname(remote_host)
 
     # First sync the filesystem
-    btrfs.run_safe(["btrfs", "filesystem", "sync", SNAPSHOTS_PATH])
+    btrfs.run_safe(["btrfs", "filesystem", "sync", SNAPSHOTS_PATH], timeout=30)
 
     # Build btrfs send command
     send_cmd = ["btrfs", "send"]
@@ -256,9 +258,7 @@ def volume_create(req):
 
     cow = opts.get("copyonwrite", "true").lower()
     if cow not in ["true", "false"]:
-        raise ValidationError(
-            f'Invalid option for copyonwrite: {cow}. Set to "true" or "false".'
-        )
+        raise ValidationError(f'Invalid option for copyonwrite: {cow}. Set to "true" or "false".')
 
     btrfs.Subvolume(volpath).create(cow=cow == "true")
     return {"Err": ""}
@@ -384,7 +384,7 @@ def volume_sync(req):
             ]
             log.debug("Running %r", cmd)
             try:
-                btrfs.run_safe(cmd, check=True, stdout=PIPE, stderr=PIPE)
+                btrfs.run_safe(cmd, check=True, stdout=PIPE, stderr=PIPE, timeout=600)  # 10 min timeout for rsync
             except Exception as ex:
                 err = getattr(ex, "stderr", ex)
                 error_message = f"Error while rsync {volume_name} from {remote_host}: {err}"
@@ -637,9 +637,7 @@ def snapshot_restore(req):
     res = {"Err": ""}
 
     if not snapshot.exists():
-        raise SnapshotNotFoundError(
-            f"Snapshot '{snapshot_name}' is not a valid BTRFS subvolume"
-        )
+        raise SnapshotNotFoundError(f"Snapshot '{snapshot_name}' is not a valid BTRFS subvolume")
 
     if volume.exists():
         # backup and delete

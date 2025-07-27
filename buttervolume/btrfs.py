@@ -1,6 +1,6 @@
 import os
 import shlex
-from subprocess import PIPE, CalledProcessError
+from subprocess import PIPE, CalledProcessError, TimeoutExpired
 from subprocess import run as _run
 
 
@@ -27,6 +27,22 @@ class InvalidPathError(BtrfsError):
     """Raised when path validation fails"""
 
     pass
+
+
+def run_safe(cmd_list, check=True, stdout=PIPE, stderr=PIPE, timeout=60):
+    """Run command safely with specified timeout"""
+    try:
+        return _run(
+            cmd_list, shell=False, check=check, stdout=stdout, stderr=stderr, timeout=timeout
+        ).stdout.decode()
+    except CalledProcessError as e:
+        cmd_str = " ".join(cmd_list)
+        raise BtrfsError(
+            f"BTRFS command failed: {cmd_str}\nStderr: {e.stderr.decode() if e.stderr else 'No error output'}"
+        )
+    except TimeoutExpired as e:
+        cmd_str = " ".join(cmd_list)
+        raise BtrfsError(f"BTRFS command timed out after {timeout}s: {cmd_str}")
 
 
 def btrfs_operation(error_type, error_msg):
@@ -90,7 +106,7 @@ class Subvolume(object):
     @btrfs_operation(BtrfsSubvolumeError, f"Failed to parse subvolume info")
     def show(self):
         """Parse btrfs subvolume show output"""
-        raw = run_safe(["btrfs", "subvolume", "show", self.path])
+        raw = run_safe(["btrfs", "subvolume", "show", self.path], timeout=15)
         lines = raw.split("\n")
 
         if len(lines) < 13:
@@ -135,16 +151,15 @@ class Subvolume(object):
         if readonly:
             cmd.append("-r")
         cmd.extend([self.path, target])
-
-        return run_safe(cmd)
+        return run_safe(cmd, timeout=120)
 
     @btrfs_operation(BtrfsSubvolumeError, f"Failed to create subvolume")
     def create(self, cow=False):
         """Create a new BTRFS subvolume"""
-        out = run_safe(["btrfs", "subvolume", "create", self.path])
+        out = run_safe(["btrfs", "subvolume", "create", self.path], timeout=120)
         if not cow:
             try:
-                run_safe(["chattr", "+C", self.path])
+                run_safe(["chattr", "+C", self.path], timeout=10)
             except BtrfsError:
                 # chattr failure is not critical, subvolume was created successfully
                 pass
@@ -160,12 +175,12 @@ class Subvolume(object):
         if check:
             @btrfs_operation(BtrfsSubvolumeError, f"Failed to delete subvolume {self.path}")
             def _delete_with_check():
-                return run_safe(["btrfs", "subvolume", "delete", self.path], check=check)
+                return run_safe(["btrfs", "subvolume", "delete", self.path], check=check, timeout=300)
             return _delete_with_check()
         else:
             # Silent failure mode
             try:
-                return run_safe(["btrfs", "subvolume", "delete", self.path], check=False)
+                return run_safe(["btrfs", "subvolume", "delete", self.path], check=False, timeout=300)
             except:
                 return ""
 
@@ -180,5 +195,4 @@ class Filesystem(object):
         cmd = ["btrfs", "filesystem", "label", self.path]
         if label is not None:
             cmd.append(label)
-
-        return run_safe(cmd)
+        return run_safe(cmd, timeout=10)
