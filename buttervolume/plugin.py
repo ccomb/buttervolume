@@ -292,7 +292,7 @@ def snapshot_send(req):
         "{}@{}".format(snapshot_path, remote_host), readonly=True
     )
     for old_snapshot in sent_snapshots:
-        btrfs.Subvolume(old_snapshot).delete
+        btrfs.Subvolume(join(SNAPSHOTS_PATH, old_snapshot)).delete()
     return {"Err": ""}
 
 

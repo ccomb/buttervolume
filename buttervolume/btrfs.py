@@ -1,5 +1,6 @@
 import os
-from subprocess import run as _run, PIPE
+from subprocess import PIPE
+from subprocess import run as _run
 
 
 def run(cmd, shell=True, check=True, stdout=PIPE, stderr=PIPE):
@@ -19,10 +20,10 @@ class Subvolume(object):
         raw = run('btrfs subvolume show "{}"'.format(self.path))
         output = {
             k.strip(): v.strip()
-            for k, v in [l.split(":", 1) for l in raw.split("\n")[1:12]]
+            for k, v in [x.split(":", 1) for x in raw.split("\n")[1:12]]
         }
         assert raw.split("\n")[12].strip() == "Snapshot(s):"
-        output["Snapshot(s)"] = [l.strip() for l in raw.split("\n")[13:]]
+        output["Snapshot(s)"] = [s.strip() for s in raw.split("\n")[13:]]
         return output
 
     def exists(self):
@@ -30,7 +31,7 @@ class Subvolume(object):
             return False
         try:
             self.show()
-        except:
+        except Exception:
             return False
         return True
 
