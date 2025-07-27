@@ -6,7 +6,7 @@ import os
 import re
 from datetime import datetime
 from os.path import basename, dirname, join
-from subprocess import PIPE, CalledProcessError, run
+from subprocess import PIPE, run
 
 from bottle import request, route
 
@@ -15,7 +15,6 @@ from buttervolume.btrfs import (
     BtrfsError,
     BtrfsFilesystemError,
     BtrfsSubvolumeError,
-    InvalidPathError,
 )
 
 
@@ -74,7 +73,7 @@ if not os.path.exists(USOCKET):
     # socket path on the host or another container
     plugins = json.loads(
         run(
-            "docker plugin inspect {}".format(DRIVERNAME),
+            f"docker plugin inspect {DRIVERNAME}",
             shell=True,
             stdout=PIPE,
             stderr=PIPE,
@@ -466,7 +465,7 @@ def snapshot_send(req):
 
     # Create local tracking snapshot
     btrfs.Subvolume(snapshot_path).snapshot(
-        "{}@{}".format(snapshot_path, remote_host), readonly=True
+        f"{snapshot_path}@{remote_host}", readonly=True
     )
 
     # Clean up old tracking snapshots
@@ -491,7 +490,7 @@ def volume_snapshot(req):
     if not os.path.exists(path) or not btrfs.Subvolume(path).exists():
         raise VolumeNotFoundError(f"Volume '{name}' not found")
 
-    timestamped = "{}@{}".format(name, datetime.now().strftime(DTFORMAT))
+    timestamped = f"{name}@{datetime.now().strftime(DTFORMAT)}"
     snapshot_path = join(SNAPSHOTS_PATH, timestamped)
 
     btrfs.Subvolume(path).snapshot(snapshot_path, readonly=True)
@@ -642,7 +641,7 @@ def snapshot_restore(req):
     if volume.exists():
         # backup and delete
         timestamp = datetime.now().strftime(DTFORMAT)
-        stamped_name = "{}@{}".format(target_name, timestamp)
+        stamped_name = f"{target_name}@{timestamp}"
         stamped_path = join(SNAPSHOTS_PATH, stamped_name)
         volume.snapshot(stamped_path, readonly=True)
         res["VolumeBackup"] = stamped_name
@@ -709,10 +708,10 @@ def snapshots_purge(req):
 
     for snapshot in compute_purges(snapshots, pattern, datetime.now()):
         if dryrun:
-            log.info("(Dry run) Would delete snapshot {}".format(snapshot))
+            log.info(f"(Dry run) Would delete snapshot {snapshot}")
         else:
             btrfs.Subvolume(join(SNAPSHOTS_PATH, snapshot)).delete()
-            log.info("Deleted snapshot {}".format(snapshot))
+            log.info(f"Deleted snapshot {snapshot}")
 
     return {"Err": ""}
 

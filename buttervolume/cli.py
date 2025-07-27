@@ -36,7 +36,7 @@ log = logging.getLogger()
 app = app()
 
 
-class Session(object):
+class Session:
     """wrapper for requests_unixsocket.Session"""
 
     def __init__(self):
@@ -88,7 +88,7 @@ def snapshot(args, test=False):
         resp = TestApp(app).post(urlpath, param)
     else:
         resp = Session().post(
-            "http+unix://{}{}".format(urllib.parse.quote_plus(USOCKET), urlpath), param
+            f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}", param
         )
     res = get_from(resp, "Snapshot")
     if res:
@@ -102,7 +102,7 @@ def schedule(args):
         {"Name": args.name[0], "Action": args.action[0], "Timer": args.timer[0]}
     )
     resp = Session().post(
-        "http+unix://{}{}".format(urllib.parse.quote_plus(USOCKET), urlpath), param
+        f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}", param
     )
     return get_from(resp, "")
 
@@ -111,7 +111,7 @@ def scheduled(args):
     if args.action == "list":
         urlpath = "/VolumeDriver.Schedule.List"
         resp = Session().get(
-            "http+unix://{}{}".format(urllib.parse.quote_plus(USOCKET), urlpath)
+            f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}"
         )
         scheduled = get_from(resp, "Schedule")
         if scheduled:
@@ -126,25 +126,19 @@ def scheduled(args):
         return scheduled
     elif args.action == "pause":
         resp = Session().post(
-            "http+unix://{}/VolumeDriver.Schedule.Pause".format(
-                urllib.parse.quote_plus(USOCKET)
-            ),
+            f"http+unix://{urllib.parse.quote_plus(USOCKET)}/VolumeDriver.Schedule.Pause",
         )
         return get_from(resp, "")
     elif args.action == "resume":
         resp = Session().post(
-            "http+unix://{}/VolumeDriver.Schedule.Resume".format(
-                urllib.parse.quote_plus(USOCKET)
-            ),
+            f"http+unix://{urllib.parse.quote_plus(USOCKET)}/VolumeDriver.Schedule.Resume",
         )
         return get_from(resp, "")
 
 
 def snapshots(args):
     resp = Session().get(
-        "http+unix://{}/VolumeDriver.Snapshot.List/{}".format(
-            urllib.parse.quote_plus(USOCKET), args.name
-        ),
+        f"http+unix://{urllib.parse.quote_plus(USOCKET)}/VolumeDriver.Snapshot.List/{args.name}",
     )
     snapshots = get_from(resp, "Snapshots")
     if snapshots:
@@ -154,9 +148,7 @@ def snapshots(args):
 
 def restore(args):
     resp = Session().post(
-        "http+unix://{}/VolumeDriver.Snapshot.Restore".format(
-            urllib.parse.quote_plus(USOCKET)
-        ),
+        f"http+unix://{urllib.parse.quote_plus(USOCKET)}/VolumeDriver.Snapshot.Restore",
         json.dumps({"Name": args.name[0], "Target": args.target}),
     )
     res = get_from(resp, "VolumeBackup")
@@ -167,7 +159,7 @@ def restore(args):
 
 def clone(args):
     resp = Session().post(
-        "http+unix://{}/VolumeDriver.Clone".format(urllib.parse.quote_plus(USOCKET)),
+        f"http+unix://{urllib.parse.quote_plus(USOCKET)}/VolumeDriver.Clone",
         json.dumps({"Name": args.name[0], "Target": args.target}),
     )
     res = get_from(resp, "VolumeCloned")
@@ -184,7 +176,7 @@ def send(args, test=False):
         resp = TestApp(app).post(urlpath, json.dumps(param))
     else:
         resp = Session().post(
-            "http+unix://{}{}".format(urllib.parse.quote_plus(USOCKET), urlpath),
+            f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}",
             json.dumps(param),
         )
     res = get_from(resp, "")
@@ -201,7 +193,7 @@ def sync(args, test=False):
         resp = TestApp(app).post(urlpath, json.dumps(param))
     else:
         resp = Session().post(
-            "http+unix://{}{}".format(urllib.parse.quote_plus(USOCKET), urlpath),
+            f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}",
             json.dumps(param),
         )
     res = get_from(resp, "")
@@ -214,7 +206,7 @@ def remove(args):
     urlpath = "/VolumeDriver.Snapshot.Remove"
     param = json.dumps({"Name": args.name[0]})
     resp = Session().post(
-        ("http+unix://{}{}").format(urllib.parse.quote_plus(USOCKET), urlpath), param
+        (f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}"), param
     )
     res = get_from(resp, "")
     if res:
@@ -230,7 +222,7 @@ def purge(args, test=False):
         resp = TestApp(app).post(urlpath, json.dumps(param))
     else:
         resp = Session().post(
-            "http+unix://{}{}".format(urllib.parse.quote_plus(USOCKET), urlpath),
+            f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}",
             json.dumps(param),
         )
     res = get_from(resp, "")
@@ -372,7 +364,7 @@ def run(_, test=False):
         os.makedirs(SNAPSHOTS_PATH, exist_ok=True)
 
     # run a thread for the scheduled jobs
-    print("Starting scheduler job every {}s".format(TIMER))
+    print(f"Starting scheduler job every {TIMER}s")
     event = threading.Event()
     thread = threading.Thread(
         target=scheduler,

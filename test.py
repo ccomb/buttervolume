@@ -1,18 +1,24 @@
 import json
 import os
+import tempfile
 import unittest
 import uuid
-import tempfile
 import weakref
-from buttervolume import btrfs, cli
-from buttervolume import plugin
-from buttervolume.cli import runjobs
-from buttervolume.plugin import VOLUMES_PATH, SNAPSHOTS_PATH, TEST_REMOTE_PATH
-from buttervolume.plugin import compute_purges, DTFORMAT
 from datetime import datetime, timedelta
 from os.path import join
 from subprocess import check_output, run
+
 from webtest import TestApp
+
+from buttervolume import btrfs, cli, plugin
+from buttervolume.cli import runjobs
+from buttervolume.plugin import (
+    DTFORMAT,
+    SNAPSHOTS_PATH,
+    TEST_REMOTE_PATH,
+    VOLUMES_PATH,
+    compute_purges,
+)
 
 # check that the target dir is btrfs
 SCHEDULE = plugin.SCHEDULE = tempfile.mkstemp()[1]
@@ -153,7 +159,7 @@ class TestCase(unittest.TestCase):
         # check the nocow
         self.assertTrue(
             b"-C-"
-            not in check_output("lsattr -d '{}'".format(path), shell=True).split()[0]
+            not in check_output(f"lsattr -d '{path}'", shell=True).split()[0]
         )
         self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name}))
 
@@ -269,7 +275,7 @@ class TestCase(unittest.TestCase):
         # check that the schedule is stored
         with open(SCHEDULE) as f:
             lines = f.readlines()
-            self.assertEqual(lines[1], "{},snapshot,60,True\n".format(name2))
+            self.assertEqual(lines[1], f"{name2},snapshot,60,True\n")
         # run the scheduler jobs
         runjobs(SCHEDULE, test=True)
         # check we have two snapshots
@@ -458,16 +464,12 @@ class TestCase(unittest.TestCase):
         ]
         for h in hours:
             run(
-                "btrfs subvolume snapshot {} {}@{}".format(
-                    path, join(SNAPSHOTS_PATH, name), h
-                ),
+                f"btrfs subvolume snapshot {path} {join(SNAPSHOTS_PATH, name)}@{h}",
                 shell=True,
             )
         timestamp = datetime.now().strftime(DTFORMAT) + "@127.1.2.3"
         run(
-            "btrfs subvolume snapshot {} {}@{}".format(
-                path, join(SNAPSHOTS_PATH, name), timestamp
-            ),
+            f"btrfs subvolume snapshot {path} {join(SNAPSHOTS_PATH, name)}@{timestamp}",
             shell=True,
         )
         run(
@@ -720,7 +722,7 @@ class TemporaryDirectory(tempfile.TemporaryDirectory):
             self,
             self._cleanup,
             self.name,
-            warn_message="Implicitly cleaning up {!r}".format(self),
+            warn_message=f"Implicitly cleaning up {self!r}",
         )
 
     def mkdir(self, path):

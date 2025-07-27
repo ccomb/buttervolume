@@ -1,5 +1,4 @@
 import os
-import shlex
 from subprocess import PIPE, CalledProcessError, TimeoutExpired
 from subprocess import run as _run
 
@@ -45,7 +44,7 @@ def btrfs_operation(error_type, error_msg, timeout=60):
                 raise error_type(
                     f"{error_msg}: BTRFS command failed: {cmd_str}\nStderr: {e.stderr.decode() if e.stderr else 'No error output'}"
                 )
-            except TimeoutExpired as e:
+            except TimeoutExpired:
                 cmd_str = " ".join(cmd_list)
                 raise error_type(f"{error_msg}: BTRFS command timed out after {timeout}s: {cmd_str}")
             except Exception as e:
@@ -64,7 +63,7 @@ def run_safe(cmd_list, check=True, stdout=PIPE, stderr=PIPE, timeout=60):
         raise BtrfsError(
             f"BTRFS command failed: {cmd_str}\nStderr: {e.stderr.decode() if e.stderr else 'No error output'}"
         )
-    except TimeoutExpired as e:
+    except TimeoutExpired:
         cmd_str = " ".join(cmd_list)
         raise BtrfsError(f"BTRFS command timed out after {timeout}s: {cmd_str}")
 
@@ -106,7 +105,7 @@ def validate_path(path):
     return path
 
 
-class Subvolume(object):
+class Subvolume:
     """basic wrapper around the CLI"""
 
     def __init__(self, path):
@@ -200,7 +199,7 @@ class Subvolume(object):
                 return ""
 
 
-class Filesystem(object):
+class Filesystem:
     def __init__(self, path):
         self.path = os.path.abspath(path)
 
