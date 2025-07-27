@@ -29,6 +29,16 @@ class InvalidPathError(BtrfsError):
     pass
 
 
+def safe_call(func, error_type, error_msg, *args, **kwargs):
+    """Generic safe wrapper that converts exceptions to specific BTRFS error types"""
+    try:
+        return func(*args, **kwargs)
+    except BtrfsError as e:
+        raise error_type(f"{error_msg}: {str(e)}")
+    except Exception as e:
+        raise error_type(f"{error_msg} - unexpected error: {str(e)}")
+
+
 def run(cmd, shell=True, check=True, stdout=PIPE, stderr=PIPE):
     try:
         return _run(cmd, shell=shell, check=check, stdout=stdout, stderr=stderr).stdout.decode()
@@ -75,7 +85,8 @@ class Subvolume(object):
 
     def show(self):
         """Parse btrfs subvolume show output"""
-        try:
+
+        def _parse_show_output():
             raw = run_safe(["btrfs", "subvolume", "show", self.path])
             lines = raw.split("\n")
 
@@ -98,10 +109,12 @@ class Subvolume(object):
                 output["Snapshot(s)"] = []
 
             return output
-        except BtrfsError:
-            raise  # Re-raise BTRFS errors
-        except Exception as e:
-            raise BtrfsSubvolumeError(f"Failed to parse subvolume info for {self.path}: {str(e)}")
+
+        return safe_call(
+            _parse_show_output,
+            BtrfsSubvolumeError,
+            f"Failed to parse subvolume info for {self.path}",
+        )
 
     def exists(self):
         """Check if this path is a valid BTRFS subvolume"""
@@ -120,35 +133,34 @@ class Subvolume(object):
 
     def snapshot(self, target, readonly=False):
         """Create a snapshot of this subvolume"""
-        try:
-            cmd = ["btrfs", "subvolume", "snapshot"]
-            if readonly:
-                cmd.append("-r")
-            cmd.extend([self.path, target])
-            return run_safe(cmd)
-        except BtrfsError as e:
-            raise BtrfsSubvolumeError(
-                f"Failed to create snapshot from {self.path} to {target}: {str(e)}"
-            )
-        except Exception as e:
-            raise BtrfsSubvolumeError(f"Unexpected error creating snapshot: {str(e)}")
+        cmd = ["btrfs", "subvolume", "snapshot"]
+        if readonly:
+            cmd.append("-r")
+        cmd.extend([self.path, target])
+
+        return safe_call(
+            run_safe,
+            BtrfsSubvolumeError,
+            f"Failed to create snapshot from {self.path} to {target}",
+            cmd,
+        )
 
     def create(self, cow=False):
         """Create a new BTRFS subvolume"""
-        try:
+
+        def _create_subvolume():
             out = run_safe(["btrfs", "subvolume", "create", self.path])
             if not cow:
                 try:
                     run_safe(["chattr", "+C", self.path])
-                except BtrfsError as e:
+                except BtrfsError:
                     # chattr failure is not critical, subvolume was created successfully
-                    # The plugin layer can decide whether to log this or not
                     pass
             return out
-        except BtrfsError as e:
-            raise BtrfsSubvolumeError(f"Failed to create subvolume {self.path}: {str(e)}")
-        except Exception as e:
-            raise BtrfsSubvolumeError(f"Unexpected error creating subvolume: {str(e)}")
+
+        return safe_call(
+            _create_subvolume, BtrfsSubvolumeError, f"Failed to create subvolume {self.path}"
+        )
 
     def delete(self, check=True):
         """Delete this BTRFS subvolume
@@ -157,16 +169,20 @@ class Subvolume(object):
                       an exception will be raised
         :return: btrfs output string
         """
-        try:
-            return run_safe(["btrfs", "subvolume", "delete", self.path], check=check)
-        except BtrfsError as e:
-            if check:
-                raise BtrfsSubvolumeError(f"Failed to delete subvolume {self.path}: {str(e)}")
-            return ""  # Silent failure when check=False
-        except Exception as e:
-            if check:
-                raise BtrfsSubvolumeError(f"Unexpected error deleting subvolume: {str(e)}")
-            return ""
+        if check:
+            return safe_call(
+                run_safe,
+                BtrfsSubvolumeError,
+                f"Failed to delete subvolume {self.path}",
+                ["btrfs", "subvolume", "delete", self.path],
+                check=check,
+            )
+        else:
+            # Silent failure mode
+            try:
+                return run_safe(["btrfs", "subvolume", "delete", self.path], check=False)
+            except:
+                return ""
 
 
 class Filesystem(object):
@@ -175,14 +191,13 @@ class Filesystem(object):
 
     def label(self, label=None):
         """Get or set filesystem label"""
-        try:
-            if label is None:
-                return run_safe(["btrfs", "filesystem", "label", self.path])
-            else:
-                return run_safe(["btrfs", "filesystem", "label", self.path, label])
-        except BtrfsError as e:
-            raise BtrfsFilesystemError(
-                f"Failed to {'get' if label is None else 'set'} filesystem label for {self.path}: {str(e)}"
-            )
-        except Exception as e:
-            raise BtrfsFilesystemError(f"Unexpected error with filesystem label: {str(e)}")
+        cmd = ["btrfs", "filesystem", "label", self.path]
+        if label is not None:
+            cmd.append(label)
+
+        return safe_call(
+            run_safe,
+            BtrfsFilesystemError,
+            f"Failed to {'get' if label is None else 'set'} filesystem label for {self.path}",
+            cmd,
+        )
