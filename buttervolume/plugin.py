@@ -29,24 +29,31 @@ TEST_REMOTE_PATH = getconfig(
 SCHEDULE = getconfig(config, "SCHEDULE", "/etc/buttervolume/schedule.csv")
 SCHEDULE_DISABLED = f"{SCHEDULE}.disabled"
 FIELDS = ["Name", "Action", "Timer", "Active"]
+# Support both old and new plugin names for backward compatibility
 DRIVERNAME = getconfig(config, "DRIVERNAME", "ccomb/buttervolume:latest")
+LEGACY_DRIVERNAME = "anybox/buttervolume:latest"
 RUNPATH = getconfig(config, "RUNPATH", "/run/docker")
 SOCKET = getconfig(config, "SOCKET", os.path.join(RUNPATH, "plugins", "btrfs.sock"))
 USOCKET = SOCKET
 if not os.path.exists(USOCKET):
     # socket path on the host or another container
-    plugins = json.loads(
-        run(
-            "docker plugin inspect {}".format(DRIVERNAME),
-            shell=True,
-            stdout=PIPE,
-            stderr=PIPE,
-        ).stdout.decode()
-        or "[]"
-    )
-    if plugins:
-        plugin = plugins[0]  # can we have several plugins with the same name?
-        USOCKET = os.path.join(RUNPATH, "plugins", plugin["Id"], "btrfs.sock")
+    # Try current plugin name first, then legacy name for backward compatibility
+    for driver_name in [DRIVERNAME, LEGACY_DRIVERNAME]:
+        try:
+            plugins = json.loads(
+                run(
+                    f"docker plugin inspect {driver_name}",
+                    shell=True,
+                    capture_output=True,
+                ).stdout.decode()
+                or "[]"
+            )
+            if plugins:
+                plugin = plugins[0]  # can we have several plugins with the same name?
+                USOCKET = os.path.join(RUNPATH, "plugins", plugin["Id"], "btrfs.sock")
+                break
+        except Exception:
+            continue  # Try next driver name
 
 TIMER = int(getconfig(config, "TIMER", 60))
 DTFORMAT = getconfig(config, "DTFORMAT", "%Y-%m-%dT%H:%M:%S.%f")
@@ -209,7 +216,7 @@ def volume_sync(req):
                 run(cmd, check=True, stdout=PIPE, stderr=PIPE)
             except Exception as ex:
                 err = getattr(ex, "stderr", ex)
-                error_message = "Error while rsync {} from {} (cmd: {}): " "{}".format(
+                error_message = "Error while rsync {} from {} (cmd: {}): {}".format(
                     volume_name, remote_host, cmd, err
                 )
                 log.error(error_message)
@@ -237,15 +244,13 @@ def snapshot_send(req):
     remote_host = req["Host"]
     remote_snapshots = SNAPSHOTS_PATH if not test else TEST_REMOTE_PATH
     # take the latest snapshot suffixed with the target host
-    sent_snapshots = sorted(
-        [
-            s
-            for s in os.listdir(SNAPSHOTS_PATH)
-            if len(s.split("@")) == 3
-            and s.split("@")[0] == snapshot_name.split("@")[0]
-            and s.split("@")[2] == remote_host
-        ]
-    )
+    sent_snapshots = sorted([
+        s
+        for s in os.listdir(SNAPSHOTS_PATH)
+        if len(s.split("@")) == 3
+        and s.split("@")[0] == snapshot_name.split("@")[0]
+        and s.split("@")[2] == remote_host
+    ])
     latest = sent_snapshots[-1] if len(sent_snapshots) > 0 else None
     if latest and len(latest.rsplit("@")) == 3:
         latest = latest.rsplit("@", 1)[0]
@@ -262,8 +267,7 @@ def snapshot_send(req):
         run(cmd.format(**locals()), shell=True, check=True, stdout=PIPE, stderr=PIPE)
     except CalledProcessError as e:
         log.warning(
-            "Failed using parent %s. Sending full snapshot %s "
-            "(stdout: %s, stderr: %s)",
+            "Failed using parent %s. Sending full snapshot %s (stdout: %s, stderr: %s)",
             latest,
             snapshot_path,
             e.stdout,
@@ -283,7 +287,7 @@ def snapshot_send(req):
             )
         except CalledProcessError as e:
             log.error(
-                "Failed sending full snapshot " "(stdout: %s, stderr: %s)",
+                "Failed sending full snapshot (stdout: %s, stderr: %s)",
                 e.stdout,
                 e.stderr,
             )
@@ -486,7 +490,7 @@ def snapshots_purge(req):
     try:
         pattern = sorted(int(i[:-1]) * units[i[-1]] for i in req["Pattern"].split(":"))
         assert len(pattern) >= 2
-    except:
+    except Exception:
         log.error("Invalid purge pattern: %s", req["Pattern"])
         return {"Err": "Invalid purge pattern"}
 
@@ -528,7 +532,7 @@ def compute_purges(snapshots, pattern, now):
                 / 60
             )
             valid_snapshots.append(s)
-        except:
+        except Exception:
             log.info("Skipping purge of %s with invalid date format", s)
             continue
     if not valid_snapshots:
