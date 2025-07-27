@@ -30,18 +30,23 @@ class InvalidPathError(BtrfsError):
 
 def btrfs_operation(error_type, error_msg, timeout=60):
     """Decorator that runs BTRFS commands with timeout and converts exceptions to specific types."""
+
     def decorator(func):
         def wrapper(self, *args, **kwargs):
             # Call the function to get the command
             cmd_list = func(self, *args, **kwargs)
-            
+
             try:
                 return _run(
-                    cmd_list, shell=False, check=True, capture_output=True, timeout=timeout
+                    cmd_list,
+                    shell=False,
+                    check=True,
+                    capture_output=True,
+                    timeout=timeout,
                 ).stdout.decode()
             except CalledProcessError as e:
                 cmd_str = " ".join(cmd_list)
-                stderr_output = e.stderr.decode() if e.stderr else 'No error output'
+                stderr_output = e.stderr.decode() if e.stderr else "No error output"
                 raise error_type(
                     f"{error_msg}: BTRFS command failed: {cmd_str}\nStderr: {stderr_output}"
                 )
@@ -52,43 +57,30 @@ def btrfs_operation(error_type, error_msg, timeout=60):
                 )
             except Exception as e:
                 raise error_type(f"{error_msg} - unexpected error: {str(e)}")
+
         return wrapper
+
     return decorator
+
 
 def run_safe(cmd_list, check=True, stdout=PIPE, stderr=PIPE, timeout=60):
     """Simple run_safe for basic operations without error type conversion"""
     try:
         return _run(
-            cmd_list, shell=False, check=check, stdout=stdout, stderr=stderr, timeout=timeout
+            cmd_list,
+            shell=False,
+            check=check,
+            stdout=stdout,
+            stderr=stderr,
+            timeout=timeout,
         ).stdout.decode()
     except CalledProcessError as e:
         cmd_str = " ".join(cmd_list)
-        stderr_output = e.stderr.decode() if e.stderr else 'No error output'
-        raise BtrfsError(
-            f"BTRFS command failed: {cmd_str}\nStderr: {stderr_output}"
-        )
+        stderr_output = e.stderr.decode() if e.stderr else "No error output"
+        raise BtrfsError(f"BTRFS command failed: {cmd_str}\nStderr: {stderr_output}")
     except TimeoutExpired:
         cmd_str = " ".join(cmd_list)
         raise BtrfsError(f"BTRFS command timed out after {timeout}s: {cmd_str}")
-
-
-
-
-
-
-def validate_path(path):
-    """Validate that path doesn't contain dangerous characters"""
-    if not path:
-        raise InvalidPathError("Path cannot be empty")
-    if ".." in path:
-        raise InvalidPathError(f"Path traversal not allowed: {path}")
-    if path.startswith("/") and not path.startswith("/var/lib/buttervolume"):
-        raise InvalidPathError(f"Absolute paths outside buttervolume directory not allowed: {path}")
-    # Additional validation for shell metacharacters
-    dangerous_chars = ["`", "$", "|", "&", ";", ">", "<", "*", "?", "[", "]", "(", ")", "{", "}"]
-    if any(char in path for char in dangerous_chars):
-        raise InvalidPathError(f"Path contains dangerous characters: {path}")
-    return path
 
 
 class Subvolume:
@@ -151,7 +143,7 @@ class Subvolume:
     def _create_subvolume(self):
         """Create the BTRFS subvolume"""
         return ["btrfs", "subvolume", "create", self.path]
-    
+
     def create(self, cow=False):
         """Create a new BTRFS subvolume"""
         out = self._create_subvolume()
@@ -167,7 +159,7 @@ class Subvolume:
     def _delete_subvolume(self):
         """Delete the BTRFS subvolume"""
         return ["btrfs", "subvolume", "delete", self.path]
-    
+
     def delete(self, check=True):
         """Delete this BTRFS subvolume
 
@@ -181,20 +173,9 @@ class Subvolume:
             # Silent failure mode
             try:
                 return run_safe(
-                    ["btrfs", "subvolume", "delete", self.path], check=False, timeout=300
+                    ["btrfs", "subvolume", "delete", self.path],
+                    check=False,
+                    timeout=300,
                 )
             except Exception:
                 return ""
-
-
-class Filesystem:
-    def __init__(self, path):
-        self.path = os.path.abspath(path)
-
-    @btrfs_operation(BtrfsFilesystemError, "Failed to manage filesystem label", timeout=10)
-    def label(self, label=None):
-        """Get or set filesystem label"""
-        cmd = ["btrfs", "filesystem", "label", self.path]
-        if label is not None:
-            cmd.append(label)
-        return cmd
