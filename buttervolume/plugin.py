@@ -11,6 +11,39 @@ from subprocess import PIPE, CalledProcessError, run
 from bottle import request, route
 
 from buttervolume import btrfs
+from buttervolume.btrfs import BtrfsError, BtrfsSubvolumeError, BtrfsFilesystemError, InvalidPathError
+
+
+# Custom exceptions for better error handling
+class ButtervolumeError(Exception):
+    """Base exception for Buttervolume errors"""
+
+    pass
+
+
+class VolumeNotFoundError(ButtervolumeError):
+    """Raised when a volume is not found"""
+
+    pass
+
+
+class SnapshotNotFoundError(ButtervolumeError):
+    """Raised when a snapshot is not found"""
+
+    pass
+
+
+class ValidationError(ButtervolumeError):
+    """Raised when input validation fails"""
+
+    pass
+
+
+class ReplicationError(ButtervolumeError):
+    """Raised when replication fails"""
+
+    pass
+
 
 config = configparser.ConfigParser()
 config.read("/etc/buttervolume/config.ini")
@@ -58,14 +91,14 @@ log = logging.getLogger()
 def validate_volume_name(name):
     """Validate volume name for security and correctness"""
     if not name:
-        raise ValueError("Volume name cannot be empty")
+        raise ValidationError("Volume name cannot be empty")
 
     if "@" in name:
-        raise ValueError('"@" is illegal in a volume name')
+        raise ValidationError('"@" is illegal in a volume name')
 
     # Check for path traversal
     if ".." in name or name.startswith("/"):
-        raise ValueError("Invalid characters in volume name")
+        raise ValidationError("Invalid characters in volume name")
 
     # Check for dangerous shell characters
     dangerous_chars = [
@@ -87,15 +120,15 @@ def validate_volume_name(name):
         "\\",
     ]
     if any(char in name for char in dangerous_chars):
-        raise ValueError("Volume name contains dangerous characters")
+        raise ValidationError("Volume name contains dangerous characters")
 
     # Ensure reasonable length
     if len(name) > 255:
-        raise ValueError("Volume name too long")
+        raise ValidationError("Volume name too long")
 
     # Only allow alphanumeric, dash, underscore, dot
     if not re.match(r"^[a-zA-Z0-9._-]+$", name):
-        raise ValueError("Volume name contains invalid characters")
+        raise ValidationError("Volume name contains invalid characters")
 
     return name
 
@@ -103,14 +136,14 @@ def validate_volume_name(name):
 def validate_hostname(hostname):
     """Validate hostname for SSH operations"""
     if not hostname:
-        raise ValueError("Hostname cannot be empty")
+        raise ValidationError("Hostname cannot be empty")
 
     # Basic hostname validation
     if not re.match(r"^[a-zA-Z0-9.-]+$", hostname):
-        raise ValueError("Invalid hostname format")
+        raise ValidationError("Invalid hostname format")
 
     if len(hostname) > 253:
-        raise ValueError("Hostname too long")
+        raise ValidationError("Hostname too long")
 
     return hostname
 
@@ -156,9 +189,8 @@ def run_btrfs_send_receive(
     send_proc.wait()
 
     if send_proc.returncode != 0 or receive_proc.returncode != 0:
-        raise CalledProcessError(
-            receive_proc.returncode or send_proc.returncode,
-            f"btrfs send/receive failed: {receive_stderr.decode()}",
+        raise ReplicationError(
+            f"btrfs send/receive failed (send: {send_proc.returncode}, receive: {receive_proc.returncode}): {receive_stderr.decode()}"
         )
 
     return receive_stdout.decode()
@@ -190,7 +222,7 @@ def volume_create(req):
     # Validate volume name
     try:
         validate_volume_name(name)
-    except ValueError as e:
+    except ValidationError as e:
         return {"Err": str(e)}
 
     volpath = join(VOLUMES_PATH, name)
@@ -204,19 +236,22 @@ def volume_create(req):
 
     try:
         btrfs.Subvolume(volpath).create(cow=cow == "true")
-    except CalledProcessError as e:
-        return {"Err": e.stderr.decode()}
-    except OSError as e:
-        return {"Err": e.strerror}
-    except Exception as e:
+        return {"Err": ""}
+    except ValidationError as e:
         return {"Err": str(e)}
-    return {"Err": ""}
+    except BtrfsSubvolumeError as e:
+        return {"Err": str(e)}
+    except (CalledProcessError, OSError) as e:
+        return {"Err": str(e)}
+    except Exception as e:
+        log.error("Unexpected error creating volume %s: %s", name, str(e))
+        return {"Err": f"Unexpected error: {str(e)}"}
 
 
 def volumepath(name):
     path = join(VOLUMES_PATH, name)
     if not btrfs.Subvolume(path).exists():
-        return None
+        raise VolumeNotFoundError(f"Volume '{name}' not found")
     return path
 
 
@@ -228,13 +263,12 @@ def volume_mount(req):
     # Validate volume name
     try:
         validate_volume_name(name)
-    except ValueError as e:
+        path = volumepath(name)
+        return {"Mountpoint": path, "Err": ""}
+    except ValidationError as e:
         return {"Err": str(e)}
-
-    path = volumepath(name)
-    if path is None:
-        return {"Err": "{}: no such volume".format(name)}
-    return {"Mountpoint": path, "Err": ""}
+    except VolumeNotFoundError as e:
+        return {"Err": str(e)}
 
 
 @route("/VolumeDriver.Path", ["POST"])
@@ -245,13 +279,12 @@ def volume_path(req):
     # Validate volume name
     try:
         validate_volume_name(name)
-    except ValueError as e:
+        path = volumepath(name)
+        return {"Mountpoint": path, "Err": ""}
+    except ValidationError as e:
         return {"Err": str(e)}
-
-    path = volumepath(name)
-    if path is None:
-        return {"Err": "{}: no such volume".format(name)}
-    return {"Mountpoint": path, "Err": ""}
+    except VolumeNotFoundError as e:
+        return {"Err": str(e)}
 
 
 @route("/VolumeDriver.Unmount", ["POST"])
@@ -268,13 +301,12 @@ def volume_get(req):
     # Validate volume name
     try:
         validate_volume_name(name)
-    except ValueError as e:
+        path = volumepath(name)
+        return {"Volume": {"Name": name, "Mountpoint": path}, "Err": ""}
+    except ValidationError as e:
         return {"Err": str(e)}
-
-    path = volumepath(name)
-    if path is None:
-        return {"Err": "{}: no such volume".format(name)}
-    return {"Volume": {"Name": name, "Mountpoint": path}, "Err": ""}
+    except VolumeNotFoundError as e:
+        return {"Err": str(e)}
 
 
 @route("/VolumeDriver.Remove", ["POST"])
@@ -285,16 +317,20 @@ def volume_remove(req):
     # Validate volume name
     try:
         validate_volume_name(name)
-    except ValueError as e:
-        return {"Err": str(e)}
-
-    path = join(VOLUMES_PATH, name)
-    try:
+        path = join(VOLUMES_PATH, name)
+        if not btrfs.Subvolume(path).exists():
+            raise VolumeNotFoundError(f"Volume '{name}' not found")
         btrfs.Subvolume(path).delete()
-    except Exception:
-        log.error("%s: no such volume", name)
-        return {"Err": "{}: no such volume".format(name)}
-    return {"Err": ""}
+        return {"Err": ""}
+    except ValidationError as e:
+        return {"Err": str(e)}
+    except VolumeNotFoundError as e:
+        return {"Err": str(e)}
+    except BtrfsSubvolumeError as e:
+        return {"Err": str(e)}
+    except Exception as e:
+        log.error("Error deleting volume %s: %s", name, str(e))
+        return {"Err": f"Error deleting volume: {str(e)}"}
 
 
 @route("/VolumeDriver.List", ["POST"])
@@ -327,14 +363,14 @@ def volume_sync(req):
     for volume_name in volumes:
         try:
             validate_volume_name(volume_name)
-        except ValueError as e:
+        except ValidationError as e:
             errors.append(f"Invalid volume name {volume_name}: {str(e)}")
             continue
 
     for remote_host in remote_hosts:
         try:
             validate_hostname(remote_host)
-        except ValueError as e:
+        except ValidationError as e:
             errors.append(f"Invalid hostname {remote_host}: {str(e)}")
             continue
 
@@ -392,7 +428,7 @@ def snapshot_send(req):
     try:
         validate_volume_name(snapshot_name.split("@")[0])  # Validate base volume name
         validate_hostname(remote_host)
-    except ValueError as e:
+    except ValidationError as e:
         return {"Err": str(e)}
 
     snapshot_path = join(SNAPSHOTS_PATH, snapshot_name)
@@ -416,7 +452,7 @@ def snapshot_send(req):
     try:
         log.info("Sending snapshot %s to %s", snapshot_path, remote_host)
         run_btrfs_send_receive(snapshot_path, remote_host, remote_snapshots, parent_path, port)
-    except CalledProcessError as e:
+    except ReplicationError as e:
         log.warning(
             "Failed using parent %s. Sending full snapshot %s: %s", latest, snapshot_path, str(e)
         )
@@ -437,7 +473,7 @@ def snapshot_send(req):
 
             # Send without parent
             run_btrfs_send_receive(snapshot_path, remote_host, remote_snapshots, None, port)
-        except CalledProcessError as e2:
+        except ReplicationError as e2:
             log.error("Failed sending full snapshot: %s", str(e2))
             return {"Err": str(e2)}
 
@@ -462,23 +498,26 @@ def volume_snapshot(req):
     """snapshot a volume in the SNAPSHOTS dir"""
     name = req["Name"]
 
-    # Validate volume name
     try:
+        # Validate volume name
         validate_volume_name(name)
-    except ValueError as e:
-        return {"Err": str(e)}
 
-    path = join(VOLUMES_PATH, name)
-    timestamped = "{}@{}".format(name, datetime.now().strftime(DTFORMAT))
-    snapshot_path = join(SNAPSHOTS_PATH, timestamped)
-    if not os.path.exists(path):
-        return {"Err": "No such volume: {}".format(name)}
-    try:
+        path = join(VOLUMES_PATH, name)
+        if not os.path.exists(path) or not btrfs.Subvolume(path).exists():
+            raise VolumeNotFoundError(f"Volume '{name}' not found")
+
+        timestamped = "{}@{}".format(name, datetime.now().strftime(DTFORMAT))
+        snapshot_path = join(SNAPSHOTS_PATH, timestamped)
+
         btrfs.Subvolume(path).snapshot(snapshot_path, readonly=True)
-    except Exception as e:
-        log.error("Error creating snapshot: %s", str(e))
+        return {"Err": "", "Snapshot": timestamped}
+    except ValidationError as e:
         return {"Err": str(e)}
-    return {"Err": "", "Snapshot": timestamped}
+    except VolumeNotFoundError as e:
+        return {"Err": str(e)}
+    except Exception as e:
+        log.error("Error creating snapshot of %s: %s", name, str(e))
+        return {"Err": str(e)}
 
 
 @route("/VolumeDriver.Snapshot.List", ["GET"])
@@ -495,7 +534,7 @@ def snapshot_sublist(_, name=""):
     if name:
         try:
             validate_volume_name(name)
-        except ValueError as e:
+        except ValidationError as e:
             return {"Err": str(e)}
 
     snapshots = os.listdir(SNAPSHOTS_PATH)
@@ -508,15 +547,25 @@ def snapshot_sublist(_, name=""):
 @add_debug_log
 def snapshot_delete(req):
     name = req["Name"]
-    path = join(SNAPSHOTS_PATH, name)
-    if not os.path.exists(path):
-        return {"Err": "No such snapshot"}
+
     try:
+        # Basic validation of snapshot name format
+        if "@" not in name:
+            raise ValidationError("Invalid snapshot name format")
+
+        path = join(SNAPSHOTS_PATH, name)
+        if not os.path.exists(path):
+            raise SnapshotNotFoundError(f"Snapshot '{name}' not found")
+
         btrfs.Subvolume(path).delete()
-    except Exception as e:
-        log.error("Error deleting snapshot: %s", str(e))
+        return {"Err": ""}
+    except ValidationError as e:
         return {"Err": str(e)}
-    return {"Err": ""}
+    except SnapshotNotFoundError as e:
+        return {"Err": str(e)}
+    except Exception as e:
+        log.error("Error deleting snapshot %s: %s", name, str(e))
+        return {"Err": str(e)}
 
 
 @route("/VolumeDriver.Schedule", ["POST"])
@@ -594,21 +643,35 @@ def snapshot_restore(req):
     """
     snapshot_name = req["Name"]
     target_name = req.get("Target")
-    if "@" not in snapshot_name:
-        # we're passing the name of the volume. Use the latest snapshot.
-        volume_name = snapshot_name
-        snapshots = os.listdir(SNAPSHOTS_PATH)
-        snapshots = [s for s in snapshots if s.startswith(volume_name + "@")]
-        if not snapshots:
-            return {"Err": ""}
-        snapshot_name = sorted(snapshots)[-1]
-    snapshot_path = join(SNAPSHOTS_PATH, snapshot_name)
-    snapshot = btrfs.Subvolume(snapshot_path)
-    target_name = target_name or snapshot_name.split("@")[0]
-    target_path = join(VOLUMES_PATH, target_name)
-    volume = btrfs.Subvolume(target_path)
-    res = {"Err": ""}
-    if snapshot.exists():
+
+    try:
+        if "@" not in snapshot_name:
+            # we're passing the name of the volume. Use the latest snapshot.
+            volume_name = snapshot_name
+            validate_volume_name(volume_name)
+            snapshots = os.listdir(SNAPSHOTS_PATH)
+            snapshots = [s for s in snapshots if s.startswith(volume_name + "@")]
+            if not snapshots:
+                raise SnapshotNotFoundError(f"No snapshots found for volume '{volume_name}'")
+            snapshot_name = sorted(snapshots)[-1]
+
+        snapshot_path = join(SNAPSHOTS_PATH, snapshot_name)
+        if not os.path.exists(snapshot_path):
+            raise SnapshotNotFoundError(f"Snapshot '{snapshot_name}' not found")
+
+        snapshot = btrfs.Subvolume(snapshot_path)
+        target_name = target_name or snapshot_name.split("@")[0]
+        validate_volume_name(target_name)
+
+        target_path = join(VOLUMES_PATH, target_name)
+        volume = btrfs.Subvolume(target_path)
+        res = {"Err": ""}
+
+        if not snapshot.exists():
+            raise SnapshotNotFoundError(
+                f"Snapshot '{snapshot_name}' is not a valid BTRFS subvolume"
+            )
+
         if volume.exists():
             # backup and delete
             timestamp = datetime.now().strftime(DTFORMAT)
@@ -617,10 +680,14 @@ def snapshot_restore(req):
             volume.snapshot(stamped_path, readonly=True)
             res["VolumeBackup"] = stamped_name
             volume.delete()
+
         snapshot.snapshot(target_path)
-    else:
-        res["Err"] = "No such snapshot"
-    return res
+        return res
+    except (ValidationError, SnapshotNotFoundError) as e:
+        return {"Err": str(e)}
+    except Exception as e:
+        log.error("Error restoring snapshot %s: %s", snapshot_name, str(e))
+        return {"Err": f"Error restoring snapshot: {str(e)}"}
 
 
 @route("/VolumeDriver.Clone", ["POST"])
@@ -631,17 +698,31 @@ def snapshot_clone(req):
     """
     volumename = req["Name"]
     targetname = req.get("Target")
-    volumepath = join(VOLUMES_PATH, volumename)
-    targetpath = join(VOLUMES_PATH, targetname)
-    volume = btrfs.Subvolume(volumepath)
-    res = {"Err": ""}
-    if volume.exists():
-        # clone
+
+    try:
+        # Validate input names
+        validate_volume_name(volumename)
+        validate_volume_name(targetname)
+
+        volumepath = join(VOLUMES_PATH, volumename)
+        targetpath = join(VOLUMES_PATH, targetname)
+
+        volume = btrfs.Subvolume(volumepath)
+        if not volume.exists():
+            raise VolumeNotFoundError(f"Source volume '{volumename}' not found")
+
+        # Check if target already exists
+        target_volume = btrfs.Subvolume(targetpath)
+        if target_volume.exists():
+            raise ValidationError(f"Target volume '{targetname}' already exists")
+
         volume.snapshot(targetpath)
-        res["VolumeCloned"] = targetname
-    else:
-        res["Err"] = "No such volume"
-    return res
+        return {"Err": "", "VolumeCloned": targetname}
+    except (ValidationError, VolumeNotFoundError) as e:
+        return {"Err": str(e)}
+    except Exception as e:
+        log.error("Error cloning volume %s to %s: %s", volumename, targetname, str(e))
+        return {"Err": f"Error cloning volume: {str(e)}"}
 
 
 @route("/VolumeDriver.Snapshots.Purge", ["POST"])
@@ -654,28 +735,37 @@ def snapshots_purge(req):
     volume_name = req["Name"]
     dryrun = req.get("Dryrun", False)
 
-    # convert the pattern to seconds, check validity and reorder
-    units = {"m": 1, "h": 60, "d": 60 * 24, "w": 60 * 24 * 7, "y": 60 * 24 * 365}
     try:
-        pattern = sorted(int(i[:-1]) * units[i[-1]] for i in req["Pattern"].split(":"))
-        assert len(pattern) >= 2
-    except:
-        log.error("Invalid purge pattern: %s", req["Pattern"])
-        return {"Err": "Invalid purge pattern"}
+        # Validate volume name
+        validate_volume_name(volume_name)
 
-    # snapshots related to the volume, more recents first
-    snapshots = (s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(volume_name + "@"))
-    try:
+        # convert the pattern to seconds, check validity and reorder
+        units = {"m": 1, "h": 60, "d": 60 * 24, "w": 60 * 24 * 7, "y": 60 * 24 * 365}
+        try:
+            pattern = sorted(int(i[:-1]) * units[i[-1]] for i in req["Pattern"].split(":"))
+            assert len(pattern) >= 2
+        except (ValueError, KeyError, AssertionError):
+            raise ValidationError(f"Invalid purge pattern: {req['Pattern']}")
+
+        # snapshots related to the volume, more recents first
+        snapshots = (s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(volume_name + "@"))
+
         for snapshot in compute_purges(snapshots, pattern, datetime.now()):
             if dryrun:
                 log.info("(Dry run) Would delete snapshot {}".format(snapshot))
             else:
                 btrfs.Subvolume(join(SNAPSHOTS_PATH, snapshot)).delete()
                 log.info("Deleted snapshot {}".format(snapshot))
+
+        return {"Err": ""}
+    except ValidationError as e:
+        return {"Err": str(e)}
     except OSError as e:
         log.error("Error purging snapshots: %s", e.strerror)
         return {"Err": e.strerror}
-    return {"Err": ""}
+    except Exception as e:
+        log.error("Error purging snapshots for %s: %s", volume_name, str(e))
+        return {"Err": f"Error purging snapshots: {str(e)}"}
 
 
 def compute_purges(snapshots, pattern, now):
