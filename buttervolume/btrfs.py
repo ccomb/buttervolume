@@ -37,7 +37,7 @@ def btrfs_operation(error_type, error_msg, timeout=60):
             
             try:
                 return _run(
-                    cmd_list, shell=False, check=True, stdout=PIPE, stderr=PIPE, timeout=timeout
+                    cmd_list, shell=False, check=True, capture_output=True, timeout=timeout
                 ).stdout.decode()
             except CalledProcessError as e:
                 cmd_str = " ".join(cmd_list)

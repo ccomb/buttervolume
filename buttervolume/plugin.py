@@ -75,8 +75,7 @@ if not os.path.exists(USOCKET):
         run(
             f"docker plugin inspect {DRIVERNAME}",
             shell=True,
-            stdout=PIPE,
-            stderr=PIPE,
+            capture_output=True,
         ).stdout.decode()
         or "[]"
     )
@@ -455,7 +454,7 @@ def snapshot_send(req):
                 remote_host,
                 f"btrfs subvolume delete {remote_snapshots}/{snapshot_name} || true",
             ]
-            subprocess.run(rm_cmd, check=False, stdout=PIPE, stderr=PIPE)
+            subprocess.run(rm_cmd, check=False, capture_output=True)
 
             # Send without parent
             run_btrfs_send_receive(snapshot_path, remote_host, remote_snapshots, None, port)

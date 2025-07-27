@@ -378,7 +378,7 @@ def run(_, test=False):
     signal.signal(signal.SIGQUIT, lambda *_: shutdown(thread, event))
     signal.signal(signal.SIGURG, lambda *_: shutdown(thread, event))
     # listen to requests
-    print("Listening to requests on %s..." % SOCKET)
+    print(f"Listening to requests on {SOCKET}...")
     serve(app, unix_socket=SOCKET, unix_socket_perms="660")
 
 
