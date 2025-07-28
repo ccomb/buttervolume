@@ -1,5 +1,17 @@
 CHANGELOG
 =========
+
+3.13 (unreleased)
+*****************
+
+- Fixed the tests: create a BTRFS filesystems in a loop device if there is no BTRFS during tests.
+- Fixed the show command
+- Updated dependencies
+- Fixed a freeze in front mode (#47)
+- Fixed critical #51 `schedule not working` 
+- Allow using volumes created with legacy plugin anybox/buttervolume (fix #52)
+- Fixed deletion of old sent snapshots
+
 3.12 (2024-11-05)
 *****************
 
