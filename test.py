@@ -824,6 +824,7 @@ class TemporaryDirectory(tempfile.TemporaryDirectory):
 
     def __init__(self, suffix=None, prefix=None, dir=None, path=None):
         self.name = self.mkdir(path) if path else tempfile.mkdtemp(suffix, prefix, dir)
+        self._ignore_cleanup_errors = False  # Add missing attribute for Python 3.11+ compatibility
         self._finalizer = weakref.finalize(
             self,
             self._cleanup,
@@ -833,7 +834,8 @@ class TemporaryDirectory(tempfile.TemporaryDirectory):
 
     def mkdir(self, path):
         if os.path.isdir(path):
-            self.cleanup()
+            import shutil
+            shutil.rmtree(path)
         os.mkdir(path, 0o700)
         return path
 
