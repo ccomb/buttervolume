@@ -351,7 +351,7 @@ def scheduler(event, config=SCHEDULE, test=False, timer=TIMER):
             return
         else:
             try:
-                runjobs(config, test, timer)
+                runjobs(config, test, timer=timer)
             except Exception:
                 log.critical("An exception occured in the scheduling job")
                 log.critical(traceback.format_exc())
