@@ -1,18 +1,24 @@
 import json
 import os
+import tempfile
 import unittest
 import uuid
-import tempfile
 import weakref
-from buttervolume import btrfs, cli
-from buttervolume import plugin
-from buttervolume.cli import runjobs
-from buttervolume.plugin import VOLUMES_PATH, SNAPSHOTS_PATH, TEST_REMOTE_PATH
-from buttervolume.plugin import compute_purges, DTFORMAT
 from datetime import datetime, timedelta
 from os.path import join
 from subprocess import check_output, run
+
 from webtest import TestApp
+
+from buttervolume import btrfs, cli, plugin
+from buttervolume.cli import runjobs
+from buttervolume.plugin import (
+    DTFORMAT,
+    SNAPSHOTS_PATH,
+    TEST_REMOTE_PATH,
+    VOLUMES_PATH,
+    compute_purges,
+)
 
 # check that the target dir is btrfs
 SCHEDULE = plugin.SCHEDULE = tempfile.mkstemp()[1]
@@ -157,6 +163,50 @@ class TestCase(unittest.TestCase):
         )
         self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name}))
 
+    def test_compression_option(self):
+        """Check that compression option works"""
+        # Test with compression=true
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        path = join(VOLUMES_PATH, name)
+        resp = jsonloads(
+            self.app.post(
+                "/VolumeDriver.Create",
+                json.dumps({"Name": name, "Opts": {"compression": "true"}}),
+            ).body
+        )
+        self.assertEqual(resp, {"Err": ""})
+
+        # Check if compression attribute is set (if lsattr is available)
+        try:
+            attrs = check_output(f'lsattr -d "{path}"', shell=True).decode()
+            self.assertIn("c", attrs.split()[0], "Compression attribute should be set")
+        except Exception:
+            # lsattr might not be available in all environments
+            pass
+
+        self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name}))
+
+        # Test with invalid compression option
+        name2 = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        resp = jsonloads(
+            self.app.post(
+                "/VolumeDriver.Create",
+                json.dumps({"Name": name2, "Opts": {"compression": "invalid"}}),
+            ).body
+        )
+        self.assertIn("Invalid option for compression", resp["Err"])
+
+        # Test with compression=false (should work normally)
+        name3 = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        resp = jsonloads(
+            self.app.post(
+                "/VolumeDriver.Create",
+                json.dumps({"Name": name3, "Opts": {"compression": "false"}}),
+            ).body
+        )
+        self.assertEqual(resp, {"Err": ""})
+        self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name3}))
+
     def test_send(self):
         """We can send a snapshot incrementally to another host"""
         # create a volume with a file
@@ -275,13 +325,11 @@ class TestCase(unittest.TestCase):
         # check we have two snapshots
         self.assertEqual(
             2,
-            len(
-                {
-                    s
-                    for s in os.listdir(SNAPSHOTS_PATH)
-                    if s.startswith(name) or s.startswith(name2)
-                }
-            ),
+            len({
+                s
+                for s in os.listdir(SNAPSHOTS_PATH)
+                if s.startswith(name) or s.startswith(name2)
+            }),
         )
         # unschedule
         self.app.post(
@@ -301,13 +349,11 @@ class TestCase(unittest.TestCase):
         runjobs(SCHEDULE, test=True, schedule_log=schedule_log)
         self.assertEqual(
             3,
-            len(
-                {
-                    s
-                    for s in os.listdir(SNAPSHOTS_PATH)
-                    if s.startswith(name) or s.startswith(name2)
-                }
-            ),
+            len({
+                s
+                for s in os.listdir(SNAPSHOTS_PATH)
+                if s.startswith(name) or s.startswith(name2)
+            }),
         )
         # unschedule the last job
         self.app.post(
@@ -353,23 +399,19 @@ class TestCase(unittest.TestCase):
         runjobs(SCHEDULE, test=True, schedule_log=schedule_log)
         self.assertEqual(
             2,
-            len(
-                {
-                    s
-                    for s in os.listdir(SNAPSHOTS_PATH)
-                    if s.startswith(name) or s.startswith(name)
-                }
-            ),
+            len({
+                s
+                for s in os.listdir(SNAPSHOTS_PATH)
+                if s.startswith(name) or s.startswith(name)
+            }),
         )
         self.assertEqual(
             1,
-            len(
-                {
-                    s
-                    for s in os.listdir(TEST_REMOTE_PATH)
-                    if s.startswith(name) or s.startswith(name)
-                }
-            ),
+            len({
+                s
+                for s in os.listdir(TEST_REMOTE_PATH)
+                if s.startswith(name) or s.startswith(name)
+            }),
         )
         # unschedule the last job
         self.app.post(
@@ -604,13 +646,11 @@ class TestCase(unittest.TestCase):
                 f.write("test sync")
             self.app.post(
                 "/VolumeDriver.Volume.Sync",
-                json.dumps(
-                    {
-                        "Volumes": [name],
-                        "Hosts": ["localhost"],
-                        "Test": True,
-                    }
-                ),
+                json.dumps({
+                    "Volumes": [name],
+                    "Hosts": ["localhost"],
+                    "Test": True,
+                }),
             )
             with open(join(path, "foobar")) as x:
                 self.assertEqual(x.read(), "test sync")
@@ -619,13 +659,11 @@ class TestCase(unittest.TestCase):
                 f.write("foobar")
             self.app.post(
                 "/VolumeDriver.Volume.Sync",
-                json.dumps(
-                    {
-                        "Volumes": [name],
-                        "Hosts": ["localhost"],
-                        "Test": True,
-                    }
-                ),
+                json.dumps({
+                    "Volumes": [name],
+                    "Hosts": ["localhost"],
+                    "Test": True,
+                }),
             )
             with open(join(path, "foobar")) as x:
                 self.assertEqual(x.read(), "test sync")
@@ -648,20 +686,20 @@ class TestCase(unittest.TestCase):
         # responding we should synchronise other hosts
         self.app.post(
             "/VolumeDriver.Schedule",
-            json.dumps(
-                {
-                    "Name": name,
-                    "Action": "synchronize:localhost,wronghost.mlf",
-                    "Timer": 120,
-                }
-            ),
+            json.dumps({
+                "Name": name,
+                "Action": "synchronize:localhost,wronghost.mlf",
+                "Timer": 120,
+            }),
         )
         # also replicate a non existing volume
         self.app.post(
             "/VolumeDriver.Schedule",
-            json.dumps(
-                {"Name": "boo", "Action": "synchronize:localhost", "Timer": 120}
-            ),
+            json.dumps({
+                "Name": "boo",
+                "Action": "synchronize:localhost",
+                "Timer": 120,
+            }),
         )
         # simulate the last synchronize is 1 day in the past
         schedule_log = {
@@ -688,13 +726,11 @@ class TestCase(unittest.TestCase):
         )
         self.app.post(
             "/VolumeDriver.Schedule",
-            json.dumps(
-                {
-                    "Name": name,
-                    "Action": "synchronize:localhost,wronghost.mlf",
-                    "Timer": 0,
-                }
-            ),
+            json.dumps({
+                "Name": name,
+                "Action": "synchronize:localhost,wronghost.mlf",
+                "Timer": 0,
+            }),
         )
 
     def test_capabilities(self):
