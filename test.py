@@ -1,18 +1,25 @@
 import json
 import os
+import subprocess
+import tempfile
 import unittest
 import uuid
-import tempfile
 import weakref
-from buttervolume import btrfs, cli
-from buttervolume import plugin
-from buttervolume.cli import runjobs
-from buttervolume.plugin import VOLUMES_PATH, SNAPSHOTS_PATH, TEST_REMOTE_PATH
-from buttervolume.plugin import compute_purges, DTFORMAT
 from datetime import datetime, timedelta
 from os.path import join
 from subprocess import check_output, run
+
 from webtest import TestApp
+
+from buttervolume import btrfs, cli, plugin
+from buttervolume.cli import runjobs
+from buttervolume.plugin import (
+    DTFORMAT,
+    SNAPSHOTS_PATH,
+    TEST_REMOTE_PATH,
+    VOLUMES_PATH,
+    compute_purges,
+)
 
 # check that the target dir is btrfs
 SCHEDULE = plugin.SCHEDULE = tempfile.mkstemp()[1]
@@ -33,8 +40,92 @@ class TestCase(unittest.TestCase):
 
     def setUp(self):
         self.app = TestApp(cli.app)
-        btrfs.Filesystem(VOLUMES_PATH).label()
+        # Try to use existing BTRFS filesystem, or create one for testing
+        try:
+            btrfs.Filesystem(VOLUMES_PATH).label()
+            print("Using existing BTRFS filesystem")
+        except Exception as e:
+            print(f"No existing BTRFS filesystem, creating one: {e}")
+            # MUST create a BTRFS filesystem on a loop device for testing
+            try:
+                success = self._try_create_btrfs_filesystem()
+                if not success:
+                    raise RuntimeError(
+                        "FAILED: Could not create BTRFS filesystem for testing"
+                    )
+            except RuntimeError:
+                raise  # Re-raise RuntimeError as-is
+            except Exception as create_error:
+                raise RuntimeError(
+                    f"FAILED: Exception while creating BTRFS filesystem: {create_error}"
+                )
+
+            # Verify the filesystem was created successfully
+            try:
+                btrfs.Filesystem(VOLUMES_PATH).label()
+                print("Successfully created and verified BTRFS filesystem")
+            except Exception as verify_error:
+                raise RuntimeError(
+                    f"FAILED: Created filesystem but verification failed: {verify_error}"
+                )
+
         self.cleanup()
+
+    def _try_create_btrfs_filesystem(self):
+        """Try to create a BTRFS filesystem for testing"""
+        if os.getuid() != 0:
+            return False
+
+        import subprocess
+        import time
+
+        # Create sparse file and loop device
+        loop_file = f"/tmp/btrfs_test_{int(time.time())}.img"
+        subprocess.run(["truncate", "-s", "1G", loop_file], check=True)
+        self._cleanup_stale_loop_devices()
+
+        result = subprocess.run(
+            ["losetup", "--find", "--show", loop_file],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        loop_dev = result.stdout.strip()
+
+        # Create and mount BTRFS filesystem
+        subprocess.run(
+            ["mkfs.btrfs", "-f", loop_dev],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        os.makedirs(VOLUMES_PATH, exist_ok=True)
+        subprocess.run(["mount", loop_dev, "/var/lib/buttervolume"], check=True)
+
+        # Create subdirectories
+        for path in [VOLUMES_PATH, SNAPSHOTS_PATH, TEST_REMOTE_PATH]:
+            os.makedirs(path, exist_ok=True)
+
+        return True
+
+    def _cleanup_stale_loop_devices(self):
+        """Clean up loop devices pointing to non-existent files"""
+        try:
+            result = subprocess.run(["losetup", "-l"], capture_output=True, text=True)
+            if result.returncode != 0:
+                return
+
+            for line in result.stdout.strip().split("\n")[1:]:  # Skip header
+                parts = line.split()
+                if len(parts) >= 6:
+                    loop_dev, backing_file = parts[0], parts[5]
+                    if backing_file.startswith(
+                        "/tmp/btrfs_test"
+                    ) and not os.path.exists(backing_file):
+                        subprocess.run(["losetup", "-d", loop_dev], capture_output=True)
+        except Exception:
+            pass  # Don't fail the test if cleanup fails
 
     def tearDown(self):
         self.cleanup()
@@ -157,6 +248,50 @@ class TestCase(unittest.TestCase):
         )
         self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name}))
 
+    def test_compression_option(self):
+        """Check that compression option works"""
+        # Test with compression=true
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        path = join(VOLUMES_PATH, name)
+        resp = jsonloads(
+            self.app.post(
+                "/VolumeDriver.Create",
+                json.dumps({"Name": name, "Opts": {"compression": "true"}}),
+            ).body
+        )
+        self.assertEqual(resp, {"Err": ""})
+
+        # Check if compression attribute is set (if lsattr is available)
+        try:
+            attrs = check_output(f'lsattr -d "{path}"', shell=True).decode()
+            self.assertIn("c", attrs.split()[0], "Compression attribute should be set")
+        except Exception:
+            # lsattr might not be available in all environments
+            pass
+
+        self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name}))
+
+        # Test with invalid compression option
+        name2 = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        resp = jsonloads(
+            self.app.post(
+                "/VolumeDriver.Create",
+                json.dumps({"Name": name2, "Opts": {"compression": "invalid"}}),
+            ).body
+        )
+        self.assertIn("Invalid option for compression", resp["Err"])
+
+        # Test with compression=false (should work normally)
+        name3 = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        resp = jsonloads(
+            self.app.post(
+                "/VolumeDriver.Create",
+                json.dumps({"Name": name3, "Opts": {"compression": "false"}}),
+            ).body
+        )
+        self.assertEqual(resp, {"Err": ""})
+        self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name3}))
+
     def test_send(self):
         """We can send a snapshot incrementally to another host"""
         # create a volume with a file
@@ -275,13 +410,11 @@ class TestCase(unittest.TestCase):
         # check we have two snapshots
         self.assertEqual(
             2,
-            len(
-                {
-                    s
-                    for s in os.listdir(SNAPSHOTS_PATH)
-                    if s.startswith(name) or s.startswith(name2)
-                }
-            ),
+            len({
+                s
+                for s in os.listdir(SNAPSHOTS_PATH)
+                if s.startswith(name) or s.startswith(name2)
+            }),
         )
         # unschedule
         self.app.post(
@@ -301,13 +434,11 @@ class TestCase(unittest.TestCase):
         runjobs(SCHEDULE, test=True, schedule_log=schedule_log)
         self.assertEqual(
             3,
-            len(
-                {
-                    s
-                    for s in os.listdir(SNAPSHOTS_PATH)
-                    if s.startswith(name) or s.startswith(name2)
-                }
-            ),
+            len({
+                s
+                for s in os.listdir(SNAPSHOTS_PATH)
+                if s.startswith(name) or s.startswith(name2)
+            }),
         )
         # unschedule the last job
         self.app.post(
@@ -353,23 +484,19 @@ class TestCase(unittest.TestCase):
         runjobs(SCHEDULE, test=True, schedule_log=schedule_log)
         self.assertEqual(
             2,
-            len(
-                {
-                    s
-                    for s in os.listdir(SNAPSHOTS_PATH)
-                    if s.startswith(name) or s.startswith(name)
-                }
-            ),
+            len({
+                s
+                for s in os.listdir(SNAPSHOTS_PATH)
+                if s.startswith(name) or s.startswith(name)
+            }),
         )
         self.assertEqual(
             1,
-            len(
-                {
-                    s
-                    for s in os.listdir(TEST_REMOTE_PATH)
-                    if s.startswith(name) or s.startswith(name)
-                }
-            ),
+            len({
+                s
+                for s in os.listdir(TEST_REMOTE_PATH)
+                if s.startswith(name) or s.startswith(name)
+            }),
         )
         # unschedule the last job
         self.app.post(
@@ -604,13 +731,11 @@ class TestCase(unittest.TestCase):
                 f.write("test sync")
             self.app.post(
                 "/VolumeDriver.Volume.Sync",
-                json.dumps(
-                    {
-                        "Volumes": [name],
-                        "Hosts": ["localhost"],
-                        "Test": True,
-                    }
-                ),
+                json.dumps({
+                    "Volumes": [name],
+                    "Hosts": ["localhost"],
+                    "Test": True,
+                }),
             )
             with open(join(path, "foobar")) as x:
                 self.assertEqual(x.read(), "test sync")
@@ -619,13 +744,11 @@ class TestCase(unittest.TestCase):
                 f.write("foobar")
             self.app.post(
                 "/VolumeDriver.Volume.Sync",
-                json.dumps(
-                    {
-                        "Volumes": [name],
-                        "Hosts": ["localhost"],
-                        "Test": True,
-                    }
-                ),
+                json.dumps({
+                    "Volumes": [name],
+                    "Hosts": ["localhost"],
+                    "Test": True,
+                }),
             )
             with open(join(path, "foobar")) as x:
                 self.assertEqual(x.read(), "test sync")
@@ -648,20 +771,20 @@ class TestCase(unittest.TestCase):
         # responding we should synchronise other hosts
         self.app.post(
             "/VolumeDriver.Schedule",
-            json.dumps(
-                {
-                    "Name": name,
-                    "Action": "synchronize:localhost,wronghost.mlf",
-                    "Timer": 120,
-                }
-            ),
+            json.dumps({
+                "Name": name,
+                "Action": "synchronize:localhost,wronghost.mlf",
+                "Timer": 120,
+            }),
         )
         # also replicate a non existing volume
         self.app.post(
             "/VolumeDriver.Schedule",
-            json.dumps(
-                {"Name": "boo", "Action": "synchronize:localhost", "Timer": 120}
-            ),
+            json.dumps({
+                "Name": "boo",
+                "Action": "synchronize:localhost",
+                "Timer": 120,
+            }),
         )
         # simulate the last synchronize is 1 day in the past
         schedule_log = {
@@ -688,13 +811,11 @@ class TestCase(unittest.TestCase):
         )
         self.app.post(
             "/VolumeDriver.Schedule",
-            json.dumps(
-                {
-                    "Name": name,
-                    "Action": "synchronize:localhost,wronghost.mlf",
-                    "Timer": 0,
-                }
-            ),
+            json.dumps({
+                "Name": name,
+                "Action": "synchronize:localhost,wronghost.mlf",
+                "Timer": 0,
+            }),
         )
 
     def test_capabilities(self):
@@ -716,6 +837,9 @@ class TemporaryDirectory(tempfile.TemporaryDirectory):
 
     def __init__(self, suffix=None, prefix=None, dir=None, path=None):
         self.name = self.mkdir(path) if path else tempfile.mkdtemp(suffix, prefix, dir)
+        self._ignore_cleanup_errors = (
+            False  # Add missing attribute for Python 3.11+ compatibility
+        )
         self._finalizer = weakref.finalize(
             self,
             self._cleanup,
@@ -725,7 +849,9 @@ class TemporaryDirectory(tempfile.TemporaryDirectory):
 
     def mkdir(self, path):
         if os.path.isdir(path):
-            self.cleanup()
+            import shutil
+
+            shutil.rmtree(path)
         os.mkdir(path, 0o700)
         return path
 

@@ -11,6 +11,7 @@ CHANGELOG
 - Fixed critical #51 `schedule not working` 
 - Allow using volumes created with legacy plugin anybox/buttervolume (fix #52)
 - Fixed deletion of old sent snapshots
+- Added support for compression (fix #36)
 
 3.12 (2024-11-05)
 *****************
