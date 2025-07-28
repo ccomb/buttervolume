@@ -292,7 +292,7 @@ def volume_create(req):
 def volumepath(name):
     path = join(VOLUMES_PATH, name)
     if not btrfs.Subvolume(path).exists():
-        raise VolumeNotFoundError(f"Volume '{name}' not found")
+        raise VolumeNotFoundError(f"Volume '{name}': no such volume")
     return path
 
 
@@ -340,7 +340,7 @@ def volume_remove(req):
     validate_volume_name(name)
     path = join(VOLUMES_PATH, name)
     if not btrfs.Subvolume(path).exists():
-        raise VolumeNotFoundError(f"Volume '{name}' not found")
+        raise VolumeNotFoundError(f"Volume '{name}': no such volume")
     btrfs.Subvolume(path).delete()
     return {"Err": ""}
 
@@ -515,7 +515,7 @@ def volume_snapshot(req):
 
     path = join(VOLUMES_PATH, name)
     if not os.path.exists(path) or not btrfs.Subvolume(path).exists():
-        raise VolumeNotFoundError(f"Volume '{name}' not found")
+        raise VolumeNotFoundError(f"Volume '{name}': no such volume")
 
     timestamped = f"{name}@{datetime.now().strftime(DTFORMAT)}"
     snapshot_path = join(SNAPSHOTS_PATH, timestamped)
@@ -697,7 +697,7 @@ def snapshot_clone(req):
 
     volume = btrfs.Subvolume(volumepath)
     if not volume.exists():
-        raise VolumeNotFoundError(f"Source volume '{volumename}' not found")
+        raise VolumeNotFoundError(f"Source volume '{volumename}': no such volume")
 
     # Check if target already exists
     target_volume = btrfs.Subvolume(targetpath)
