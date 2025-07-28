@@ -39,7 +39,8 @@ class TestCase(unittest.TestCase):
                     if item.startswith(PREFIX_TEST_VOLUME):
                         item_path = join(directory, item)
                         try:
-                            btrfs.Subvolume(item_path).delete(check=False)
+                            if os.path.exists(item_path):
+                                btrfs.Subvolume(item_path).delete(check=False)
                         except Exception:
                             pass  # Continue cleanup even if some items fail
 
@@ -661,7 +662,7 @@ class TestCase(unittest.TestCase):
             "/VolumeDriver.Snapshots.Purge",
             json.dumps({"Name": name, "Pattern": "60m:plop:3000m"}),
         )
-        self.assertEqual(jsonloads(resp.body), {"Err": "Invalid purge pattern"})
+        self.assertEqual(jsonloads(resp.body), {"Err": "Invalid purge pattern: 60m:plop:3000m"})
         # run the purge with a more complex unsorted save pattern
         nb_snaps = len(os.listdir(SNAPSHOTS_PATH))
         resp = self.app.post(
