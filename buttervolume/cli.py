@@ -347,9 +347,19 @@ def scheduler(event, config=SCHEDULE, test=False, timer=TIMER):
 
 
 def shutdown(thread, event):
+    log.info("Shutting down buttervolume...")
     event.set()
     thread.join()
-    sys.exit(1)
+    
+    # Clean up the socket file to prevent Docker from hanging
+    if os.path.exists(SOCKET):
+        try:
+            os.unlink(SOCKET)
+            log.info("Cleaned up socket: %s", SOCKET)
+        except OSError as e:
+            log.warning("Could not remove socket %s: %s", SOCKET, e)
+    
+    sys.exit(0)  # Use exit code 0 for clean shutdown
 
 
 def run(_, test=False):
@@ -359,6 +369,14 @@ def run(_, test=False):
     if not os.path.exists(SNAPSHOTS_PATH):
         log.info("Creating %s", SNAPSHOTS_PATH)
         os.makedirs(SNAPSHOTS_PATH, exist_ok=True)
+
+    # Clean up any stale socket from previous unclean shutdown
+    if os.path.exists(SOCKET):
+        try:
+            os.unlink(SOCKET)
+            log.info("Removed stale socket: %s", SOCKET)
+        except OSError as e:
+            log.warning("Could not remove stale socket %s: %s", SOCKET, e)
 
     # run a thread for the scheduled jobs
     print(f"Starting scheduler job every {TIMER}s")
