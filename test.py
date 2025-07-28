@@ -80,8 +80,10 @@ class TestCase(unittest.TestCase):
             if os.getuid() != 0:
                 return False
 
-            # Create a loop device with a sparse file
-            loop_file = "/tmp/btrfs_test.img"
+            # Create a loop device with a sparse file (unique name to avoid conflicts)
+            import time
+            loop_file = f"/tmp/btrfs_test_{int(time.time())}.img"
+            print(f"Creating sparse file: {loop_file}")
             subprocess.run(["truncate", "-s", "1G", loop_file], check=True)
 
             # Use losetup --find --show to atomically find and set up loop device
@@ -104,6 +106,9 @@ class TestCase(unittest.TestCase):
                 print(f"Current loop device status: {losetup_list.stdout}")
             except subprocess.CalledProcessError as e:
                 print(f"Could not list loop devices: {e}")
+
+            # Clean up any stale loop devices pointing to non-existent files
+            self._cleanup_stale_loop_devices()
 
             # Now try the actual allocation
             result = subprocess.run(
@@ -148,6 +153,46 @@ class TestCase(unittest.TestCase):
 
             traceback.print_exc()
             raise
+
+    def _cleanup_stale_loop_devices(self):
+        """Clean up loop devices pointing to non-existent files"""
+        try:
+            import subprocess
+
+            # Get list of all loop devices and their backing files
+            result = subprocess.run(
+                ["losetup", "-l"], capture_output=True, text=True
+            )
+            if result.returncode != 0:
+                print("Could not list loop devices for cleanup")
+                return
+
+            lines = result.stdout.strip().split("\n")
+            if len(lines) <= 1:  # Only header or empty
+                return
+
+            for line in lines[1:]:  # Skip header
+                parts = line.split()
+                if len(parts) >= 6:
+                    loop_dev = parts[0]
+                    backing_file = parts[5]
+                    
+                    # Check if backing file starts with our test pattern and doesn't exist
+                    if backing_file.startswith("/tmp/btrfs_test") and not os.path.exists(backing_file):
+                        print(f"Cleaning up stale loop device {loop_dev} -> {backing_file}")
+                        try:
+                            subprocess.run(
+                                ["losetup", "-d", loop_dev],
+                                check=True,
+                                capture_output=True
+                            )
+                            print(f"Successfully detached {loop_dev}")
+                        except subprocess.CalledProcessError as e:
+                            print(f"Failed to detach {loop_dev}: {e}")
+
+        except Exception as e:
+            print(f"Error during loop device cleanup: {e}")
+            # Don't fail the test if cleanup fails
 
     def tearDown(self):
         self.cleanup()
