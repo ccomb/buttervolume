@@ -30,7 +30,11 @@ from buttervolume.plugin import (
     VOLUMES_PATH,
 )
 
-VERSION = open(join(dirname(realpath(__file__)), "VERSION")).read().strip()
+try:
+    from buttervolume._version import __version__ as VERSION
+except ImportError:
+    # Fallback for development/testing
+    VERSION = "dev"
 logging.basicConfig(level=LOGLEVEL)
 log = logging.getLogger()
 app = app()

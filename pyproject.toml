@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatchling-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "buttervolume"
-version = "3.13.0"
+dynamic = ["version"]
 description = "BTRFS Volume plugin for Docker"
 readme = "README.rst"
 license = "MIT"
@@ -26,6 +26,8 @@ classifiers = [
 dependencies = [
     "bottle",
     "requests-unixsocket2",
+    "waitress",
+    "urllib3<3.0,>=2.3.0",
 ]
 
 [project.optional-dependencies]
@@ -41,6 +43,12 @@ dev = [
 
 [project.scripts]
 buttervolume = "buttervolume.cli:main"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "buttervolume/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["buttervolume"]
