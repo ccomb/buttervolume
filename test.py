@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 import uuid
@@ -71,131 +72,60 @@ class TestCase(unittest.TestCase):
         self.cleanup()
 
     def _try_create_btrfs_filesystem(self):
-        """Try to create a BTRFS filesystem for testing (Docker environment only)"""
-        try:
-            import subprocess
+        """Try to create a BTRFS filesystem for testing"""
+        if os.getuid() != 0:
+            return False
 
-            # Only attempt this in Docker/privileged environment
-            # Check if we're running as root with access to loop devices
-            if os.getuid() != 0:
-                return False
+        import subprocess
+        import time
 
-            # Create a loop device with a sparse file (unique name to avoid conflicts)
-            import time
+        # Create sparse file and loop device
+        loop_file = f"/tmp/btrfs_test_{int(time.time())}.img"
+        subprocess.run(["truncate", "-s", "1G", loop_file], check=True)
+        self._cleanup_stale_loop_devices()
 
-            loop_file = f"/tmp/btrfs_test_{int(time.time())}.img"
-            print(f"Creating sparse file: {loop_file}")
-            subprocess.run(["truncate", "-s", "1G", loop_file], check=True)
+        result = subprocess.run(
+            ["losetup", "--find", "--show", loop_file],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        loop_dev = result.stdout.strip()
 
-            # Use losetup --find --show to atomically find and set up loop device
-            print("Setting up loop device with losetup --find --show...")
+        # Create and mount BTRFS filesystem
+        subprocess.run(
+            ["mkfs.btrfs", "-f", loop_dev],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
-            # First, let's check what loop devices are available and their status
-            try:
-                ls_result = subprocess.run(
-                    ["ls", "-la", "/dev/loop*"], capture_output=True, text=True
-                )
-                print(f"Available loop devices: {ls_result.stdout}")
-            except subprocess.CalledProcessError:
-                print("Could not list /dev/loop* devices")
+        os.makedirs(VOLUMES_PATH, exist_ok=True)
+        subprocess.run(["mount", loop_dev, "/var/lib/buttervolume"], check=True)
 
-            # Try to see if any loop devices are currently in use
-            try:
-                losetup_list = subprocess.run(
-                    ["losetup", "-l"], capture_output=True, text=True
-                )
-                print(f"Current loop device status: {losetup_list.stdout}")
-            except subprocess.CalledProcessError as e:
-                print(f"Could not list loop devices: {e}")
+        # Create subdirectories
+        for path in [VOLUMES_PATH, SNAPSHOTS_PATH, TEST_REMOTE_PATH]:
+            os.makedirs(path, exist_ok=True)
 
-            # Clean up any stale loop devices pointing to non-existent files
-            self._cleanup_stale_loop_devices()
-
-            # Now try the actual allocation
-            result = subprocess.run(
-                ["losetup", "--find", "--show", loop_file],
-                capture_output=True,
-                text=True,
-            )
-
-            if result.returncode != 0:
-                print(f"losetup failed with code {result.returncode}")
-                print(f"stdout: {result.stdout}")
-                print(f"stderr: {result.stderr}")
-                raise subprocess.CalledProcessError(
-                    result.returncode, result.args, result.stdout, result.stderr
-                )
-
-            loop_dev = result.stdout.strip()
-            print(f"Allocated loop device: {loop_dev}")
-
-            # Create BTRFS filesystem
-            subprocess.run(
-                ["mkfs.btrfs", "-f", loop_dev],
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-
-            # Mount it
-            os.makedirs(VOLUMES_PATH, exist_ok=True)
-            os.makedirs(SNAPSHOTS_PATH, exist_ok=True)
-            subprocess.run(["mount", loop_dev, "/var/lib/buttervolume"], check=True)
-
-            # Recreate subdirectories after mount
-            os.makedirs(VOLUMES_PATH, exist_ok=True)
-            os.makedirs(SNAPSHOTS_PATH, exist_ok=True)
-            os.makedirs(TEST_REMOTE_PATH, exist_ok=True)
-
-            return True
-        except Exception as e:
-            print(f"ERROR: Failed to create BTRFS filesystem: {e}")
-            import traceback
-
-            traceback.print_exc()
-            raise
+        return True
 
     def _cleanup_stale_loop_devices(self):
         """Clean up loop devices pointing to non-existent files"""
         try:
-            import subprocess
-
-            # Get list of all loop devices and their backing files
             result = subprocess.run(["losetup", "-l"], capture_output=True, text=True)
             if result.returncode != 0:
-                print("Could not list loop devices for cleanup")
                 return
 
-            lines = result.stdout.strip().split("\n")
-            if len(lines) <= 1:  # Only header or empty
-                return
-
-            for line in lines[1:]:  # Skip header
+            for line in result.stdout.strip().split("\n")[1:]:  # Skip header
                 parts = line.split()
                 if len(parts) >= 6:
-                    loop_dev = parts[0]
-                    backing_file = parts[5]
-
-                    # Check if backing file starts with our test pattern and doesn't exist
+                    loop_dev, backing_file = parts[0], parts[5]
                     if backing_file.startswith(
                         "/tmp/btrfs_test"
                     ) and not os.path.exists(backing_file):
-                        print(
-                            f"Cleaning up stale loop device {loop_dev} -> {backing_file}"
-                        )
-                        try:
-                            subprocess.run(
-                                ["losetup", "-d", loop_dev],
-                                check=True,
-                                capture_output=True,
-                            )
-                            print(f"Successfully detached {loop_dev}")
-                        except subprocess.CalledProcessError as e:
-                            print(f"Failed to detach {loop_dev}: {e}")
-
-        except Exception as e:
-            print(f"Error during loop device cleanup: {e}")
-            # Don't fail the test if cleanup fails
+                        subprocess.run(["losetup", "-d", loop_dev], capture_output=True)
+        except Exception:
+            pass  # Don't fail the test if cleanup fails
 
     def tearDown(self):
         self.cleanup()
