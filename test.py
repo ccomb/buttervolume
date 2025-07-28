@@ -39,27 +39,23 @@ class TestCase(unittest.TestCase):
 
     def setUp(self):
         self.app = TestApp(cli.app)
-        # Check that the target dir is BTRFS - skip tests if not
-        # Set BUTTERVOLUME_SKIP_BTRFS_CHECK=1 to skip this check for testing
-        if not os.environ.get("BUTTERVOLUME_SKIP_BTRFS_CHECK"):
+        # Try to use existing BTRFS filesystem, or create one for testing
+        try:
+            btrfs.Filesystem(VOLUMES_PATH).label()
+            print("Using existing BTRFS filesystem")
+        except Exception as e:
+            print(f"No existing BTRFS filesystem, creating one: {e}")
+            # MUST create a BTRFS filesystem on a loop device for testing
+            if not self._try_create_btrfs_filesystem():
+                raise RuntimeError(f"FAILED: Could not create BTRFS filesystem for testing")
+            
+            # Verify the filesystem was created successfully
             try:
                 btrfs.Filesystem(VOLUMES_PATH).label()
-            except Exception as e:
-                import unittest
-
-                # For Docker tests, try to create a BTRFS filesystem on a loop device
-                if self._try_create_btrfs_filesystem():
-                    # Retry after filesystem creation
-                    try:
-                        btrfs.Filesystem(VOLUMES_PATH).label()
-                    except Exception:
-                        raise unittest.SkipTest(
-                            f"BTRFS filesystem required at {VOLUMES_PATH}. Error: {e}"
-                        )
-                else:
-                    raise unittest.SkipTest(
-                        f"BTRFS filesystem required at {VOLUMES_PATH}. Error: {e}"
-                    )
+                print("Successfully created and verified BTRFS filesystem")
+            except Exception as verify_error:
+                raise RuntimeError(f"FAILED: Created filesystem but verification failed: {verify_error}")
+        
         self.cleanup()
 
     def _try_create_btrfs_filesystem(self):
@@ -76,14 +72,16 @@ class TestCase(unittest.TestCase):
             loop_file = "/tmp/btrfs_test.img"
             subprocess.run(["truncate", "-s", "1G", loop_file], check=True)
 
-            # Find available loop device
+            # Use losetup --find --show to atomically find and set up loop device
+            print("Setting up loop device with losetup --find --show...")
             result = subprocess.run(
-                ["losetup", "-f"], capture_output=True, text=True, check=True
+                ["losetup", "--find", "--show", loop_file], 
+                capture_output=True, 
+                text=True, 
+                check=True
             )
             loop_dev = result.stdout.strip()
-
-            # Set up loop device
-            subprocess.run(["losetup", loop_dev, loop_file], check=True)
+            print(f"Allocated loop device: {loop_dev}")
 
             # Create BTRFS filesystem
             subprocess.run(
