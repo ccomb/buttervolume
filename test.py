@@ -128,35 +128,12 @@ class TestCase(unittest.TestCase):
         resp = jsonloads(
             self.app.post("/VolumeDriver.Create", json.dumps({"Name": name})).body
         )
-        # Debug: check if volume creation had errors
-        if resp.get("Err") != "":
-            self.fail(f"Volume creation failed: {resp}")
         self.assertEqual(resp, {"Err": ""})
 
         # get
         resp = jsonloads(
             self.app.post("/VolumeDriver.Get", json.dumps({"Name": name})).body
         )
-        # Debug: show detailed info if Volume key is missing
-        if "Volume" not in resp:
-            # Check if it's actually a BTRFS subvolume
-            try:
-                from subprocess import run, PIPE
-                result = run(f'btrfs subvolume show "{path}"', shell=True, 
-                           capture_output=True, text=True)
-                btrfs_status = f"BTRFS show exit code: {result.returncode}, stdout: {result.stdout[:100]}, stderr: {result.stderr[:100]}"
-            except Exception as e:
-                btrfs_status = f"BTRFS show failed: {e}"
-            
-            debug_info = (
-                f"Volume key missing from response. "
-                f"Response: {resp}, "
-                f"Path exists: {os.path.exists(path)}, "
-                f"Path is dir: {os.path.isdir(path) if os.path.exists(path) else 'N/A'}, "
-                f"Volume path: {path}, "
-                f"BTRFS status: {btrfs_status}"
-            )
-            self.fail(debug_info)
         self.assertEqual(resp["Volume"]["Name"], name)
         self.assertEqual(resp["Volume"]["Mountpoint"], path)
         self.assertEqual(resp["Err"], "")
