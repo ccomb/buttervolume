@@ -49,19 +49,25 @@ class TestCase(unittest.TestCase):
             try:
                 success = self._try_create_btrfs_filesystem()
                 if not success:
-                    raise RuntimeError(f"FAILED: Could not create BTRFS filesystem for testing")
+                    raise RuntimeError(
+                        f"FAILED: Could not create BTRFS filesystem for testing"
+                    )
             except RuntimeError:
                 raise  # Re-raise RuntimeError as-is
             except Exception as create_error:
-                raise RuntimeError(f"FAILED: Exception while creating BTRFS filesystem: {create_error}")
-            
+                raise RuntimeError(
+                    f"FAILED: Exception while creating BTRFS filesystem: {create_error}"
+                )
+
             # Verify the filesystem was created successfully
             try:
                 btrfs.Filesystem(VOLUMES_PATH).label()
                 print("Successfully created and verified BTRFS filesystem")
             except Exception as verify_error:
-                raise RuntimeError(f"FAILED: Created filesystem but verification failed: {verify_error}")
-        
+                raise RuntimeError(
+                    f"FAILED: Created filesystem but verification failed: {verify_error}"
+                )
+
         self.cleanup()
 
     def _try_create_btrfs_filesystem(self):
@@ -80,12 +86,40 @@ class TestCase(unittest.TestCase):
 
             # Use losetup --find --show to atomically find and set up loop device
             print("Setting up loop device with losetup --find --show...")
+
+            # First, let's check what loop devices are available and their status
+            try:
+                ls_result = subprocess.run(
+                    ["ls", "-la", "/dev/loop*"], capture_output=True, text=True
+                )
+                print(f"Available loop devices: {ls_result.stdout}")
+            except subprocess.CalledProcessError:
+                print("Could not list /dev/loop* devices")
+
+            # Try to see if any loop devices are currently in use
+            try:
+                losetup_list = subprocess.run(
+                    ["losetup", "-l"], capture_output=True, text=True
+                )
+                print(f"Current loop device status: {losetup_list.stdout}")
+            except subprocess.CalledProcessError as e:
+                print(f"Could not list loop devices: {e}")
+
+            # Now try the actual allocation
             result = subprocess.run(
-                ["losetup", "--find", "--show", loop_file], 
-                capture_output=True, 
-                text=True, 
-                check=True
+                ["losetup", "--find", "--show", loop_file],
+                capture_output=True,
+                text=True,
             )
+
+            if result.returncode != 0:
+                print(f"losetup failed with code {result.returncode}")
+                print(f"stdout: {result.stdout}")
+                print(f"stderr: {result.stderr}")
+                raise subprocess.CalledProcessError(
+                    result.returncode, result.args, result.stdout, result.stderr
+                )
+
             loop_dev = result.stdout.strip()
             print(f"Allocated loop device: {loop_dev}")
 
@@ -111,6 +145,7 @@ class TestCase(unittest.TestCase):
         except Exception as e:
             print(f"ERROR: Failed to create BTRFS filesystem: {e}")
             import traceback
+
             traceback.print_exc()
             raise
 
@@ -824,7 +859,9 @@ class TemporaryDirectory(tempfile.TemporaryDirectory):
 
     def __init__(self, suffix=None, prefix=None, dir=None, path=None):
         self.name = self.mkdir(path) if path else tempfile.mkdtemp(suffix, prefix, dir)
-        self._ignore_cleanup_errors = False  # Add missing attribute for Python 3.11+ compatibility
+        self._ignore_cleanup_errors = (
+            False  # Add missing attribute for Python 3.11+ compatibility
+        )
         self._finalizer = weakref.finalize(
             self,
             self._cleanup,
@@ -835,6 +872,7 @@ class TemporaryDirectory(tempfile.TemporaryDirectory):
     def mkdir(self, path):
         if os.path.isdir(path):
             import shutil
+
             shutil.rmtree(path)
         os.mkdir(path, 0o700)
         return path
