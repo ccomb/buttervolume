@@ -50,7 +50,7 @@ class TestCase(unittest.TestCase):
                 success = self._try_create_btrfs_filesystem()
                 if not success:
                     raise RuntimeError(
-                        f"FAILED: Could not create BTRFS filesystem for testing"
+                        "FAILED: Could not create BTRFS filesystem for testing"
                     )
             except RuntimeError:
                 raise  # Re-raise RuntimeError as-is
@@ -82,6 +82,7 @@ class TestCase(unittest.TestCase):
 
             # Create a loop device with a sparse file (unique name to avoid conflicts)
             import time
+
             loop_file = f"/tmp/btrfs_test_{int(time.time())}.img"
             print(f"Creating sparse file: {loop_file}")
             subprocess.run(["truncate", "-s", "1G", loop_file], check=True)
@@ -160,9 +161,7 @@ class TestCase(unittest.TestCase):
             import subprocess
 
             # Get list of all loop devices and their backing files
-            result = subprocess.run(
-                ["losetup", "-l"], capture_output=True, text=True
-            )
+            result = subprocess.run(["losetup", "-l"], capture_output=True, text=True)
             if result.returncode != 0:
                 print("Could not list loop devices for cleanup")
                 return
@@ -176,15 +175,19 @@ class TestCase(unittest.TestCase):
                 if len(parts) >= 6:
                     loop_dev = parts[0]
                     backing_file = parts[5]
-                    
+
                     # Check if backing file starts with our test pattern and doesn't exist
-                    if backing_file.startswith("/tmp/btrfs_test") and not os.path.exists(backing_file):
-                        print(f"Cleaning up stale loop device {loop_dev} -> {backing_file}")
+                    if backing_file.startswith(
+                        "/tmp/btrfs_test"
+                    ) and not os.path.exists(backing_file):
+                        print(
+                            f"Cleaning up stale loop device {loop_dev} -> {backing_file}"
+                        )
                         try:
                             subprocess.run(
                                 ["losetup", "-d", loop_dev],
                                 check=True,
-                                capture_output=True
+                                capture_output=True,
                             )
                             print(f"Successfully detached {loop_dev}")
                         except subprocess.CalledProcessError as e:
