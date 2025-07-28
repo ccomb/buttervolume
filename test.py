@@ -1,18 +1,24 @@
 import json
 import os
+import tempfile
 import unittest
 import uuid
-import tempfile
 import weakref
-from buttervolume import btrfs, cli
-from buttervolume import plugin
-from buttervolume.cli import runjobs
-from buttervolume.plugin import VOLUMES_PATH, SNAPSHOTS_PATH, TEST_REMOTE_PATH
-from buttervolume.plugin import compute_purges, DTFORMAT
 from datetime import datetime, timedelta
 from os.path import join
 from subprocess import check_output, run
+
 from webtest import TestApp
+
+from buttervolume import btrfs, cli, plugin
+from buttervolume.cli import runjobs
+from buttervolume.plugin import (
+    DTFORMAT,
+    SNAPSHOTS_PATH,
+    TEST_REMOTE_PATH,
+    VOLUMES_PATH,
+    compute_purges,
+)
 
 # check that the target dir is btrfs
 SCHEDULE = plugin.SCHEDULE = tempfile.mkstemp()[1]
@@ -33,8 +39,73 @@ class TestCase(unittest.TestCase):
 
     def setUp(self):
         self.app = TestApp(cli.app)
-        btrfs.Filesystem(VOLUMES_PATH).label()
+        # Check that the target dir is BTRFS - skip tests if not
+        # Set BUTTERVOLUME_SKIP_BTRFS_CHECK=1 to skip this check for testing
+        if not os.environ.get("BUTTERVOLUME_SKIP_BTRFS_CHECK"):
+            try:
+                btrfs.Filesystem(VOLUMES_PATH).label()
+            except Exception as e:
+                import unittest
+
+                # For Docker tests, try to create a BTRFS filesystem on a loop device
+                if self._try_create_btrfs_filesystem():
+                    # Retry after filesystem creation
+                    try:
+                        btrfs.Filesystem(VOLUMES_PATH).label()
+                    except Exception:
+                        raise unittest.SkipTest(
+                            f"BTRFS filesystem required at {VOLUMES_PATH}. Error: {e}"
+                        )
+                else:
+                    raise unittest.SkipTest(
+                        f"BTRFS filesystem required at {VOLUMES_PATH}. Error: {e}"
+                    )
         self.cleanup()
+
+    def _try_create_btrfs_filesystem(self):
+        """Try to create a BTRFS filesystem for testing (Docker environment only)"""
+        try:
+            import subprocess
+
+            # Only attempt this in Docker/privileged environment
+            # Check if we're running as root with access to loop devices
+            if os.getuid() != 0:
+                return False
+
+            # Create a loop device with a sparse file
+            loop_file = "/tmp/btrfs_test.img"
+            subprocess.run(["truncate", "-s", "1G", loop_file], check=True)
+
+            # Find available loop device
+            result = subprocess.run(
+                ["losetup", "-f"], capture_output=True, text=True, check=True
+            )
+            loop_dev = result.stdout.strip()
+
+            # Set up loop device
+            subprocess.run(["losetup", loop_dev, loop_file], check=True)
+
+            # Create BTRFS filesystem
+            subprocess.run(
+                ["mkfs.btrfs", "-f", loop_dev],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+            # Mount it
+            os.makedirs(VOLUMES_PATH, exist_ok=True)
+            os.makedirs(SNAPSHOTS_PATH, exist_ok=True)
+            subprocess.run(["mount", loop_dev, "/var/lib/buttervolume"], check=True)
+
+            # Recreate subdirectories after mount
+            os.makedirs(VOLUMES_PATH, exist_ok=True)
+            os.makedirs(SNAPSHOTS_PATH, exist_ok=True)
+            os.makedirs(TEST_REMOTE_PATH, exist_ok=True)
+
+            return True
+        except Exception:
+            return False
 
     def tearDown(self):
         self.cleanup()
@@ -275,13 +346,11 @@ class TestCase(unittest.TestCase):
         # check we have two snapshots
         self.assertEqual(
             2,
-            len(
-                {
-                    s
-                    for s in os.listdir(SNAPSHOTS_PATH)
-                    if s.startswith(name) or s.startswith(name2)
-                }
-            ),
+            len({
+                s
+                for s in os.listdir(SNAPSHOTS_PATH)
+                if s.startswith(name) or s.startswith(name2)
+            }),
         )
         # unschedule
         self.app.post(
@@ -301,13 +370,11 @@ class TestCase(unittest.TestCase):
         runjobs(SCHEDULE, test=True, schedule_log=schedule_log)
         self.assertEqual(
             3,
-            len(
-                {
-                    s
-                    for s in os.listdir(SNAPSHOTS_PATH)
-                    if s.startswith(name) or s.startswith(name2)
-                }
-            ),
+            len({
+                s
+                for s in os.listdir(SNAPSHOTS_PATH)
+                if s.startswith(name) or s.startswith(name2)
+            }),
         )
         # unschedule the last job
         self.app.post(
@@ -353,23 +420,19 @@ class TestCase(unittest.TestCase):
         runjobs(SCHEDULE, test=True, schedule_log=schedule_log)
         self.assertEqual(
             2,
-            len(
-                {
-                    s
-                    for s in os.listdir(SNAPSHOTS_PATH)
-                    if s.startswith(name) or s.startswith(name)
-                }
-            ),
+            len({
+                s
+                for s in os.listdir(SNAPSHOTS_PATH)
+                if s.startswith(name) or s.startswith(name)
+            }),
         )
         self.assertEqual(
             1,
-            len(
-                {
-                    s
-                    for s in os.listdir(TEST_REMOTE_PATH)
-                    if s.startswith(name) or s.startswith(name)
-                }
-            ),
+            len({
+                s
+                for s in os.listdir(TEST_REMOTE_PATH)
+                if s.startswith(name) or s.startswith(name)
+            }),
         )
         # unschedule the last job
         self.app.post(
@@ -604,13 +667,11 @@ class TestCase(unittest.TestCase):
                 f.write("test sync")
             self.app.post(
                 "/VolumeDriver.Volume.Sync",
-                json.dumps(
-                    {
-                        "Volumes": [name],
-                        "Hosts": ["localhost"],
-                        "Test": True,
-                    }
-                ),
+                json.dumps({
+                    "Volumes": [name],
+                    "Hosts": ["localhost"],
+                    "Test": True,
+                }),
             )
             with open(join(path, "foobar")) as x:
                 self.assertEqual(x.read(), "test sync")
@@ -619,13 +680,11 @@ class TestCase(unittest.TestCase):
                 f.write("foobar")
             self.app.post(
                 "/VolumeDriver.Volume.Sync",
-                json.dumps(
-                    {
-                        "Volumes": [name],
-                        "Hosts": ["localhost"],
-                        "Test": True,
-                    }
-                ),
+                json.dumps({
+                    "Volumes": [name],
+                    "Hosts": ["localhost"],
+                    "Test": True,
+                }),
             )
             with open(join(path, "foobar")) as x:
                 self.assertEqual(x.read(), "test sync")
@@ -648,20 +707,20 @@ class TestCase(unittest.TestCase):
         # responding we should synchronise other hosts
         self.app.post(
             "/VolumeDriver.Schedule",
-            json.dumps(
-                {
-                    "Name": name,
-                    "Action": "synchronize:localhost,wronghost.mlf",
-                    "Timer": 120,
-                }
-            ),
+            json.dumps({
+                "Name": name,
+                "Action": "synchronize:localhost,wronghost.mlf",
+                "Timer": 120,
+            }),
         )
         # also replicate a non existing volume
         self.app.post(
             "/VolumeDriver.Schedule",
-            json.dumps(
-                {"Name": "boo", "Action": "synchronize:localhost", "Timer": 120}
-            ),
+            json.dumps({
+                "Name": "boo",
+                "Action": "synchronize:localhost",
+                "Timer": 120,
+            }),
         )
         # simulate the last synchronize is 1 day in the past
         schedule_log = {
@@ -688,13 +747,11 @@ class TestCase(unittest.TestCase):
         )
         self.app.post(
             "/VolumeDriver.Schedule",
-            json.dumps(
-                {
-                    "Name": name,
-                    "Action": "synchronize:localhost,wronghost.mlf",
-                    "Timer": 0,
-                }
-            ),
+            json.dumps({
+                "Name": name,
+                "Action": "synchronize:localhost,wronghost.mlf",
+                "Timer": 0,
+            }),
         )
 
     def test_capabilities(self):

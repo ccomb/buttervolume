@@ -16,14 +16,33 @@ class Subvolume(object):
         self.path = path
 
     def show(self):
-        """somewhat hardcoded..."""
+        """Parse btrfs subvolume show output with flexible format handling"""
         raw = run('btrfs subvolume show "{}"'.format(self.path))
-        output = {
-            k.strip(): v.strip()
-            for k, v in [x.split(":", 1) for x in raw.split("\n")[1:12]]
-        }
-        assert raw.split("\n")[12].strip() == "Snapshot(s):"
-        output["Snapshot(s)"] = [s.strip() for s in raw.split("\n")[13:]]
+        lines = raw.split("\n")
+        output = {}
+        
+        # Parse key-value pairs until we find the Snapshot(s) section or end
+        line_idx = 1
+        while line_idx < len(lines):
+            line = lines[line_idx].strip()
+            if not line:
+                line_idx += 1
+                continue
+            if line == "Snapshot(s):":
+                break
+            if ":" in line:
+                k, v = line.split(":", 1)
+                output[k.strip()] = v.strip()
+            line_idx += 1
+        
+        # Find and parse snapshots section
+        snapshots = []
+        for i in range(line_idx + 1, len(lines)):
+            snapshot = lines[i].strip()
+            if snapshot:
+                snapshots.append(snapshot)
+        
+        output["Snapshot(s)"] = snapshots
         return output
 
     def exists(self):
