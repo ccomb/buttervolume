@@ -1,18 +1,20 @@
 #!/bin/bash
 
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  echo "❌ Aborting: you have uncommitted changes (staged or unstaged). Please git stash your changes first."
+  git status
+  exit 1
+fi
+
+set -e
 VERSION=$1
 rm -f buttervolume.zip
 pushd $( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd ) > /dev/null
 if [ "$VERSION" == "" ]; then
     VERSION="HEAD"
     echo "#####################"
-    echo "Testing working directory with uncommited changes."
-    echo "You can test another version with: ./test.sh <VERSION>"
-    echo "#####################"
-    git archive -o buttervolume.zip `git stash create`
-else
-    echo "#####################"
     echo "Testing version $VERSION"
+    echo "You can test another version with: ./test.sh <VERSION>"
     echo "#####################"
     git archive -o buttervolume.zip $VERSION
 fi
