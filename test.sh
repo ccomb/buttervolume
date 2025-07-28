@@ -19,7 +19,14 @@ if [ "$VERSION" == "" ]; then
     git archive -o buttervolume.zip $VERSION
 fi
 
-docker build --build-arg VERSION=$VERSION -t ccomb/buttervolume_test:$VERSION . --no-cache
+# Use cache for development (HEAD), clean build for specific versions
+if [ "$1" == "" ]; then
+    echo "Using Docker cache for faster development builds"
+    docker build --build-arg VERSION=$VERSION -t ccomb/buttervolume_test:$VERSION .
+else
+    echo "Clean build for version $VERSION"
+    docker build --build-arg VERSION=$VERSION -t ccomb/buttervolume_test:$VERSION . --no-cache
+fi
 test="sudo docker run -it --rm --privileged -v /var/lib/docker:/var/lib/docker -v $PWD:/usr/src/buttervolume -w /usr/src/buttervolume ccomb/buttervolume_test:HEAD test"
 $test
 echo "#############################"
