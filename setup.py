@@ -25,7 +25,7 @@ setup(
     },
     install_requires=[
         "bottle",
-        "urllib3>=2.0.2,<2.3",
+        "urllib3<3.0,>=2.3.0",
         "requests-unixsocket2",
         "waitress",
         "webtest",
