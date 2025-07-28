@@ -134,6 +134,11 @@ class TestCase(unittest.TestCase):
         resp = jsonloads(
             self.app.post("/VolumeDriver.Get", json.dumps({"Name": name})).body
         )
+        # Debug: print response if test fails
+        if "Volume" not in resp:
+            print(f"DEBUG: Get volume response: {resp}")
+            print(f"DEBUG: Volume path exists: {os.path.exists(path)}")
+            print(f"DEBUG: Volume path is dir: {os.path.isdir(path) if os.path.exists(path) else 'N/A'}")
         self.assertEqual(resp["Volume"]["Name"], name)
         self.assertEqual(resp["Volume"]["Mountpoint"], path)
         self.assertEqual(resp["Err"], "")
