@@ -179,3 +179,14 @@ class Subvolume:
                 )
             except Exception:
                 return ""
+
+
+class Filesystem:
+    def __init__(self, path):
+        self.path = path
+
+    def label(self, label=None):
+        if label is None:
+            return run_safe(["btrfs", "filesystem", "label", self.path], timeout=15)
+        else:
+            return run_safe(["btrfs", "filesystem", "label", self.path, label], timeout=15)

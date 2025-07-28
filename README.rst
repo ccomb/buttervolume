@@ -238,11 +238,24 @@ or::
 
     docker volume create --volume-driver=ccomb/buttervolume:latest
 
-When creating a volume, you can choose to disable copy-on-write on a per-volume
-basis. Just use the `-o` or `--opt` option as defined in the `Docker documentation
+When creating a volume, you can choose to disable copy-on-write or enable compression
+on a per-volume basis. Just use the `-o` or `--opt` option as defined in the `Docker documentation
 <https://docs.docker.com/engine/reference/commandline/volume_create/#options>`_ ::
 
     docker volume create -d ccomb/buttervolume -o copyonwrite=false myvolume
+    docker volume create -d ccomb/buttervolume -o compression=true myvolume
+    docker volume create -d ccomb/buttervolume -o compression=zlib myvolume
+
+Available options:
+
+- ``copyonwrite``: ``true`` (default) or ``false`` - enables/disables copy-on-write
+- ``compression``: ``false`` (default), ``true``, ``zlib``, ``lzo``, or ``zstd`` - enables BTRFS compression for new files
+
+Copy-On-Write is enabled by default. You can disable it if you really want.
+Why disabling copy-on-write? If your docker volume stores databases such as
+PostgreSQL or MariaDB, the copy-on-write feature may hurt performance, though
+the latest kernels have improved a lot. The good news is that disabling
+copy-on-write does not prevent from doing snaphots.
 
 Running the plugin locally or in legacy mode
 --------------------------------------------

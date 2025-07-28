@@ -268,7 +268,24 @@ def volume_create(req):
     if cow not in ["true", "false"]:
         raise ValidationError(f'Invalid option for copyonwrite: {cow}. Set to "true" or "false".')
 
+    compression = opts.get("compression", "").lower()
+    valid_compression = ["", "false", "true", "zlib", "lzo", "zstd"]
+    if compression not in valid_compression:
+        return {
+            "Err": f"Invalid option for compression: {compression}. Valid options: {', '.join(valid_compression[1:])}"
+        }
+
     btrfs.Subvolume(volpath).create(cow=cow == "true")
+
+    # Enable compression if requested
+    if compression and compression != "false":
+        try:
+            run(f'chattr +c "{volpath}"', shell=True, check=True)
+            log.info(f"Enabled compression for volume {name}")
+        except Exception as e:
+            log.warning(f"Could not enable compression for volume {name}: {e}")
+            # Don't fail volume creation if compression setting fails
+
     return {"Err": ""}
 
 
