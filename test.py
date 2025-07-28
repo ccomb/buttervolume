@@ -46,8 +46,14 @@ class TestCase(unittest.TestCase):
         except Exception as e:
             print(f"No existing BTRFS filesystem, creating one: {e}")
             # MUST create a BTRFS filesystem on a loop device for testing
-            if not self._try_create_btrfs_filesystem():
-                raise RuntimeError(f"FAILED: Could not create BTRFS filesystem for testing")
+            try:
+                success = self._try_create_btrfs_filesystem()
+                if not success:
+                    raise RuntimeError(f"FAILED: Could not create BTRFS filesystem for testing")
+            except RuntimeError:
+                raise  # Re-raise RuntimeError as-is
+            except Exception as create_error:
+                raise RuntimeError(f"FAILED: Exception while creating BTRFS filesystem: {create_error}")
             
             # Verify the filesystem was created successfully
             try:
@@ -102,8 +108,11 @@ class TestCase(unittest.TestCase):
             os.makedirs(TEST_REMOTE_PATH, exist_ok=True)
 
             return True
-        except Exception:
-            return False
+        except Exception as e:
+            print(f"ERROR: Failed to create BTRFS filesystem: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
 
     def tearDown(self):
         self.cleanup()
