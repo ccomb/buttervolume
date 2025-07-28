@@ -34,9 +34,23 @@ class TestCase(unittest.TestCase):
     def cleanup(self):
         """clean-up test volumes and snapshots before each test"""
         for directory in (VOLUMES_PATH, SNAPSHOTS_PATH, TEST_REMOTE_PATH):
-            btrfs.Subvolume(join(directory, PREFIX_TEST_VOLUME) + "*").delete(
-                check=False
-            )
+            if os.path.exists(directory):
+                # Get all test items and delete them explicitly
+                items_to_delete = []
+                try:
+                    for item in os.listdir(directory):
+                        if item.startswith(PREFIX_TEST_VOLUME):
+                            items_to_delete.append(join(directory, item))
+                except FileNotFoundError:
+                    continue
+                
+                # Delete each item, ignoring failures
+                for item_path in items_to_delete:
+                    try:
+                        if os.path.exists(item_path):
+                            btrfs.Subvolume(item_path).delete(check=False)
+                    except Exception:
+                        pass  # Continue with cleanup even if individual items fail
 
     def setUp(self):
         self.app = TestApp(cli.app)
