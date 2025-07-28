@@ -44,11 +44,21 @@ class TestCase(unittest.TestCase):
                 except FileNotFoundError:
                     continue
                 
-                # Delete each item, ignoring failures
+                # Delete each item, trying both BTRFS and regular deletion
                 for item_path in items_to_delete:
                     try:
                         if os.path.exists(item_path):
-                            btrfs.Subvolume(item_path).delete(check=False)
+                            if os.path.isdir(item_path):
+                                # Try BTRFS subvolume deletion first
+                                try:
+                                    btrfs.Subvolume(item_path).delete(check=False)
+                                except Exception:
+                                    # If BTRFS deletion fails, try regular directory removal
+                                    import shutil
+                                    shutil.rmtree(item_path, ignore_errors=True)
+                            else:
+                                # Regular file
+                                os.unlink(item_path)
                     except Exception:
                         pass  # Continue with cleanup even if individual items fail
 
@@ -300,6 +310,7 @@ class TestCase(unittest.TestCase):
         self.assertEqual(resp, {"Err": ""})
         self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name3}))
 
+    @unittest.skipIf(os.environ.get("BUTTERVOLUME_LOCAL_TEST"), "SSH not available in local test mode")
     def test_send(self):
         """We can send a snapshot incrementally to another host"""
         # create a volume with a file
@@ -350,7 +361,10 @@ class TestCase(unittest.TestCase):
         self.create_a_volume_with_a_file(name)
         # snapshot the volume
         resp = self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name}))
-        snapshot = join(SNAPSHOTS_PATH, json.loads(resp.body.decode())["Snapshot"])
+        resp_data = json.loads(resp.body.decode())
+        if "Err" in resp_data and resp_data["Err"]:
+            self.fail(f"Snapshot creation failed: {resp_data['Err']}")
+        snapshot = join(SNAPSHOTS_PATH, resp_data["Snapshot"])
         # check the snapshot has the same content
         with open(join(path, "foobar")) as x:
             with open(join(snapshot, "foobar")) as y:
@@ -466,6 +480,7 @@ class TestCase(unittest.TestCase):
             json.dumps({"Name": name, "Action": "snapshot", "Timer": 0}),
         )
 
+    @unittest.skipIf(os.environ.get("BUTTERVOLUME_LOCAL_TEST"), "SSH not available in local test mode")
     def test_schedule_replicate(self):
         # create a volume with a file
         name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
@@ -628,9 +643,15 @@ class TestCase(unittest.TestCase):
         self.create_a_volume_with_a_file(name)
 
         def cleanup_snapshots():
-            btrfs.Subvolume(join(SNAPSHOTS_PATH, PREFIX_TEST_VOLUME) + "*").delete(
-                check=False
-            )
+            """Clean up all test snapshots"""
+            if os.path.exists(SNAPSHOTS_PATH):
+                for item in os.listdir(SNAPSHOTS_PATH):
+                    if item.startswith(PREFIX_TEST_VOLUME):
+                        item_path = join(SNAPSHOTS_PATH, item)
+                        try:
+                            btrfs.Subvolume(item_path).delete(check=False)
+                        except Exception:
+                            pass  # Continue cleanup even if individual items fail
 
         self.create_20_hourly_snapshots(name)
         # run the purge with a simple save pattern (2h only once)
@@ -728,6 +749,7 @@ class TestCase(unittest.TestCase):
             json.dumps({"Name": name, "Action": "purge:2h:2h", "Timer": 0}),
         )
 
+    @unittest.skipIf(os.environ.get("BUTTERVOLUME_LOCAL_TEST"), "SSH not available in local test mode")
     def test_synchronization(self):
         """Check we can synchronize a volume"""
         # create a volume with a file
@@ -769,6 +791,7 @@ class TestCase(unittest.TestCase):
             with open(join(path, "foobar")) as x:
                 self.assertEqual(x.read(), "test sync")
 
+    @unittest.skipIf(os.environ.get("BUTTERVOLUME_LOCAL_TEST"), "SSH not available in local test mode")
     def test_schedule_synchronization(self):
         # create a volume with a file
         name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
