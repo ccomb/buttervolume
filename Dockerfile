@@ -2,22 +2,24 @@
 FROM debian:12 AS builder
 MAINTAINER Christophe Combelles. <ccomb@prelab.fr>
 
-RUN apt-get update
-RUN apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
-        python3-pip \
-        python3-venv \
+        curl \
+        ca-certificates \
         git \
-        unzip
-RUN rm -rf /var/lib/apt/lists/*
-RUN python3 -m pip install --upgrade pip
+        unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+ADD https://astral.sh/uv/install.sh /uv-installer.sh
+RUN sh /uv-installer.sh && rm /uv-installer.sh
+ENV PATH="/root/.local/bin/:$PATH"
 
 COPY buttervolume.zip /
-RUN mkdir /usr/src/buttervolume
-RUN echo "Unzipping buttervolume.zip..." && unzip -d /usr/src/buttervolume buttervolume.zip
-RUN echo "Contents after unzip:" && ls -la /usr/src/buttervolume/
-RUN cd /usr/src/buttervolume && echo "Contents of source:" && ls -la
-RUN cd /usr/src/buttervolume && echo "Installing with pip..." && python3 -m pip install --no-cache-dir --target /app . -v || (echo "Pip install failed, showing logs:" && cat ~/.cache/pip/log/* 2>/dev/null || echo "No pip logs found" && exit 1)
+RUN mkdir /usr/src/buttervolume \
+    && unzip -d /usr/src/buttervolume buttervolume.zip \
+    && cd /usr/src/buttervolume \
+    && uv pip install --target /app .
 
 # Runtime stage - minimal dependencies
 FROM debian:12
