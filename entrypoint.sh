@@ -17,7 +17,8 @@ if [[ $1 == 'test' ]]; then
     ssh-keyscan -p $SSH_PORT localhost >> /root/.ssh/known_hosts
     cd /usr/src/buttervolume
     mkdir -p /var/lib/buttervolume/received
-    exec python3 setup.py $@
+    # Run tests with pytest
+    exec python3 -m pytest test.py -v
 else
     /tini -s -- buttervolume $@
 fi

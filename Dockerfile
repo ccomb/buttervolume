@@ -2,21 +2,24 @@
 FROM debian:12 AS builder
 MAINTAINER Christophe Combelles. <ccomb@prelab.fr>
 
-RUN set -x; \
-    apt-get update \
-    && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
-        python3-pip \
-        python3-venv \
+        curl \
+        ca-certificates \
         git \
         unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+ADD https://astral.sh/uv/install.sh /uv-installer.sh
+RUN sh /uv-installer.sh && rm /uv-installer.sh
+ENV PATH="/root/.local/bin/:$PATH"
 
 COPY buttervolume.zip /
 RUN mkdir /usr/src/buttervolume \
     && unzip -d /usr/src/buttervolume buttervolume.zip \
     && cd /usr/src/buttervolume \
-    && python3 -m pip install --no-cache-dir --target /app .
+    && uv pip install --target /app .
 
 # Runtime stage - minimal dependencies
 FROM debian:12
@@ -29,6 +32,8 @@ RUN set -x; \
         curl \
         ca-certificates \
         python3 \
+        python3-pytest \
+        python3-webtest \
         ssh \
         rsync \
     && rm -rf /var/lib/apt/lists/* \
