@@ -22,32 +22,34 @@ RUN mkdir /usr/src/buttervolume \
     && uv pip install --target /app .
 
 # Runtime stage - minimal dependencies
-FROM debian:12
-MAINTAINER Christophe Combelles. <ccomb@prelab.fr>
+FROM debian:12-slim
+LABEL maintainer="Christophe Combelles <ccomb@prelab.fr>"
 
-RUN set -x; \
-    apt-get update \
+# Install runtime dependencies and create directories in one layer
+RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         btrfs-progs \
-        curl \
         ca-certificates \
         python3 \
         python3-pytest \
         python3-webtest \
-        ssh \
+        openssh-client \
+        openssh-server \
         rsync \
-    && rm -rf /var/lib/apt/lists/* \
+        curl \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
+    && apt-get clean \
     && mkdir -p /run/docker/plugins \
     && mkdir -p /var/lib/buttervolume/volumes \
     && mkdir -p /var/lib/buttervolume/snapshots \
-    && mkdir /etc/buttervolume /root/.ssh
+    && mkdir -p /etc/buttervolume /root/.ssh
 
 # Copy the built application from builder stage
 COPY --from=builder /app /usr/local/lib/python3.11/site-packages/
 ENV PYTHONPATH=/usr/local/lib/python3.11/site-packages
 
 # add tini to avoid sshd zombie processes
-ENV TINI_VERSION v0.19.0
+ENV TINI_VERSION=v0.19.0
 ADD https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini /tini
 RUN chmod +x /tini
 
