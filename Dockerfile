@@ -32,7 +32,8 @@ RUN set -x; \
         curl \
         ca-certificates \
         python3 \
-        python3-pip \
+        python3-pytest \
+        python3-webtest \
         ssh \
         rsync \
     && rm -rf /var/lib/apt/lists/* \
