@@ -65,7 +65,7 @@ TEST_REMOTE_PATH = getconfig(config, "TEST_REMOTE_PATH", "/var/lib/buttervolume/
 SCHEDULE = getconfig(config, "SCHEDULE", "/etc/buttervolume/schedule.csv")
 SCHEDULE_DISABLED = f"{SCHEDULE}.disabled"
 FIELDS = ["Name", "Action", "Timer", "Active"]
-# Support both old and new plugin names for backward compatibility  
+# Support both old and new plugin names for backward compatibility
 DRIVERNAME = getconfig(config, "DRIVERNAME", "ccomb/buttervolume:latest")
 LEGACY_DRIVERNAME = "anybox/buttervolume:latest"
 RUNPATH = getconfig(config, "RUNPATH", "/run/docker")
@@ -369,7 +369,7 @@ def volume_sync(req):
     volumes = req["Volumes"]
     remote_hosts = req["Hosts"]
     port = os.getenv("SSH_PORT", "1122")
-    errors = list()
+    errors = []
 
     # Validate inputs
     for volume_name in volumes:
@@ -491,9 +491,7 @@ def snapshot_send(req):
             return {"Err": str(e2)}
 
     # Create local tracking snapshot
-    btrfs.Subvolume(snapshot_path).snapshot(
-        f"{snapshot_path}@{remote_host}", readonly=True
-    )
+    btrfs.Subvolume(snapshot_path).snapshot(f"{snapshot_path}@{remote_host}", readonly=True)
 
     # Clean up old tracking snapshots
     for old_snapshot in sent_snapshots:
@@ -725,10 +723,18 @@ def snapshots_purge(req):
     # convert the pattern to seconds, check validity and reorder
     units = {"m": 1, "h": 60, "d": 60 * 24, "w": 60 * 24 * 7, "y": 60 * 24 * 365}
     try:
-        pattern = sorted(int(i[:-1]) * units[i[-1]] for i in req["Pattern"].split(":"))
-        assert len(pattern) >= 2
-    except (ValueError, KeyError, AssertionError):
-        raise ValidationError(f"Invalid purge pattern: {req['Pattern']}")
+        split = req["Pattern"].split(":")
+        assert len(split) >= 2, "Pattern must have at least 2 components"
+        assert all(p[:-1].isnumeric() for p in split), (
+            "Pattern components must be numeric with unit suffix"
+        )
+        letters = [units[p[-1]] for p in split]
+        assert all(x < y for x, y in zip(letters, letters[1:])), (
+            "Time units must be in ascending order (m < h < d < w < y)"
+        )
+        pattern = sorted(int(i[:-1]) * units[i[-1]] for i in split)
+    except (ValueError, KeyError, AssertionError) as e:
+        raise ValidationError(f"Invalid purge pattern: {req['Pattern']} - {str(e)}") from None
 
     # snapshots related to the volume, more recents first
     snapshots = (s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(volume_name + "@"))
