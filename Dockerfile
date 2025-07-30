@@ -50,8 +50,17 @@ ENV PYTHONPATH=/usr/local/lib/python3.11/site-packages
 
 # add tini to avoid sshd zombie processes
 ENV TINI_VERSION=v0.19.0
-ADD https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini /tini
-RUN chmod +x /tini
+RUN set -eux; \
+    dpkgArch="$(dpkg --print-architecture)"; \
+    case "${dpkgArch##*-}" in \
+        amd64) tiniArch='amd64' ;; \
+        arm64) tiniArch='arm64' ;; \
+        armhf) tiniArch='armhf' ;; \
+        i386) tiniArch='i386' ;; \
+        *) echo >&2 "unsupported architecture: ${dpkgArch}"; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini-${tiniArch}" -o /tini; \
+    chmod +x /tini
 
 COPY entrypoint.sh /
 ENTRYPOINT ["/entrypoint.sh"]
