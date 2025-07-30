@@ -2,6 +2,12 @@
 
 SSH_PORT=${SSH_PORT:-1122}
 
+# Ensure required directories exist in the mounted volume
+# /var/lib/buttervolume/config (host) -> /etc/buttervolume (container)
+# /var/lib/buttervolume/ssh (host) -> /root/.ssh (container)
+mkdir -p /var/lib/buttervolume/config
+mkdir -p /var/lib/buttervolume/ssh
+
 chown -R root: /root/
 sed -r "s/[#]{0,1}Port [0-9]{2,5}/Port $SSH_PORT/g" /etc/ssh/sshd_config -i
 service ssh start

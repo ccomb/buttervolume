@@ -1,6 +1,6 @@
 # Build stage - includes development tools
 FROM debian:12 AS builder
-MAINTAINER Christophe Combelles. <ccomb@prelab.fr>
+MAINTAINER Christophe Combelles. <ccomb@free.fr>
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
@@ -23,7 +23,7 @@ RUN mkdir /usr/src/buttervolume \
 
 # Runtime stage - minimal dependencies
 FROM debian:12-slim
-LABEL maintainer="Christophe Combelles <ccomb@prelab.fr>"
+LABEL maintainer="Christophe Combelles <ccomb@free.fr>"
 
 # Install runtime dependencies and create directories in one layer
 RUN apt-get update \
