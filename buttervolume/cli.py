@@ -348,11 +348,6 @@ def shutdown(thread, event):
 
 def init_btrfs(args):
     """Initialize BTRFS filesystem for buttervolume"""
-    # Check if running as root
-    if os.geteuid() != 0:
-        print("ERROR: buttervolume init must be run as root")
-        return False
-
     # Default path if no arguments provided
     target_path = "/var/lib/buttervolume"
 
@@ -367,15 +362,28 @@ def init_btrfs(args):
 
         print(f"Creating BTRFS image file: {image_path} (size: {image_size})")
 
+        # Check if we can write to the target directory
+        parent_dir = os.path.dirname(image_path)
+        if not os.access(parent_dir, os.W_OK):
+            print(f"ERROR: No write permission to directory: {parent_dir}")
+            if parent_dir.startswith(("/var/", "/etc/", "/usr/")):
+                print("Try running as root or choose a path in your home directory")
+            return False
+
         # Create the directory if it doesn't exist
-        os.makedirs(os.path.dirname(image_path), exist_ok=True)
+        try:
+            os.makedirs(parent_dir, exist_ok=True)
+        except PermissionError:
+            print(f"ERROR: Permission denied creating directory: {parent_dir}")
+            print("Try running as root or choose a path in your home directory")
+            return False
 
         try:
             # Create sparse file
             subprocess.run(["truncate", "-s", image_size, image_path], check=True)
 
             # Format as BTRFS
-            subprocess.run(["mkfs.btrfs", "-f", image_path], check=True)
+            subprocess.run(["/usr/sbin/mkfs.btrfs", "-f", image_path], check=True)
 
             print(f"Successfully created BTRFS image: {image_path}")
             print(f"To use it, mount it to {target_path}:")
@@ -390,6 +398,12 @@ def init_btrfs(args):
 
         if not os.path.exists(target_path):
             print(f"ERROR: Path does not exist: {target_path}")
+            return False
+
+        # Check if we need root for this path
+        if target_path.startswith(("/var/", "/etc/", "/usr/")) and os.geteuid() != 0:
+            print("ERROR: Root privileges required for system paths")
+            print("Try running with sudo or use --file with a user-owned path")
             return False
 
         # Check if it's a BTRFS filesystem
@@ -409,6 +423,14 @@ def init_btrfs(args):
 
     else:
         # Mode 3: Default path - check if it's BTRFS
+        # Default path requires root
+        if os.geteuid() != 0:
+            print("ERROR: Root privileges required for default path /var/lib/buttervolume")
+            print("Either:")
+            print("  - Run with sudo")
+            print("  - Use --file ~/my-btrfs.img to create an image in your home directory")
+            return False
+
         if not os.path.exists(target_path):
             print(f"ERROR: Default path does not exist: {target_path}")
             print("Either:")

@@ -35,6 +35,8 @@ source = { editable = "." }
 dependencies = [
     { name = "bottle" },
     { name = "requests-unixsocket2" },
+    { name = "urllib3" },
+    { name = "waitress" },
 ]
 
 [package.optional-dependencies]
@@ -55,6 +57,8 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'test'" },
     { name = "requests-unixsocket2" },
     { name = "ruff", marker = "extra == 'dev'" },
+    { name = "urllib3", specifier = ">=2.3.0,<3.0" },
+    { name = "waitress" },
     { name = "webtest", marker = "extra == 'dev'" },
     { name = "webtest", marker = "extra == 'test'" },
 ]
