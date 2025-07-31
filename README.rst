@@ -114,12 +114,12 @@ container::
 
     docker plugin enable ccomb/buttervolume:HEAD
 
-You can check it is responding by running a buttervolume command::
+You can check it is responding by running a buttervolume command using aliases::
 
     export RUNCROOT=/run/docker/runtime-runc/plugins.moby/ # or /run/docker/plugins/runtime-root/plugins.moby/
     alias drunc="sudo runc --root $RUNCROOT"
     alias buttervolume="drunc exec -t $(drunc list|tail -n+2|awk '{print $1}') buttervolume"
-    sudo buttervolume scheduled
+    buttervolume scheduled
 
 Increase the log level by writing a `/var/lib/buttervolume/config/config.ini` file with::
 
@@ -152,11 +152,23 @@ Check it is running::
 
     docker plugin ls
 
-Find your runc root, then define useful aliases::
+Find your runc root, then define useful aliases or functions.
+
+**Option 1: Using aliases (quick setup)**::
 
     export RUNCROOT=/run/docker/runtime-runc/plugins.moby/ # or /run/docker/plugins/runtime-root/plugins.moby/
     alias drunc="sudo runc --root $RUNCROOT"
     alias buttervolume="drunc exec -t $(drunc list|tail -n+2|awk '{print $1}') buttervolume"
+
+**Option 2: Using functions (recommended for .bash_profile)**::
+
+    function drunc () {
+      RUNCROOT=/run/docker/runtime-runc/plugins.moby/ # or /run/docker/plugins/runtime-root/plugins.moby/
+      sudo runc --root $RUNCROOT $@
+    }
+    function buttervolume () {
+      drunc exec -t $(docker plugin ls --no-trunc  | grep 'ccomb/buttervolume:latest' |  awk '{print $1}') buttervolume $@
+    }
 
 And try a buttervolume command::
 
@@ -166,17 +178,6 @@ Or create a volume with the driver. Note that the name of the driver is the
 name of the plugin::
 
     docker volume create -d ccomb/buttervolume:latest myvolume
-
-Note that instead of using aliases, you can also define functions that you
-can put in your .bash_profile or .bash_aliases::
-
-    function drunc () {
-      RUNCROOT=/run/docker/runtime-runc/plugins.moby/ # or /run/docker/plugins/runtime-root/plugins.moby/
-      sudo runc --root $RUNCROOT $@
-    }
-    function buttervolume () {
-      drunc exec -t $(docker plugin ls --no-trunc  | grep 'ccomb/buttervolume:latest' |  awk '{print $1}') buttervolume $@
-    }
 
 
 Upgrade
