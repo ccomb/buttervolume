@@ -4,12 +4,13 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import sys
 import threading
 import traceback
 import urllib.parse
 from datetime import datetime, timedelta
-from os.path import dirname, join, realpath
+from os.path import exists
 from subprocess import CalledProcessError
 
 import requests_unixsocket
@@ -46,20 +47,14 @@ class Session:
         try:
             return self.session.post(*a, **kw)
         except ConnectionError:
-            log.error(
-                "Failed to connect to Buttervolume. "
-                "You can start it with: buttervolume run"
-            )
+            log.error("Failed to connect to Buttervolume. You can start it with: buttervolume run")
             return
 
     def get(self, *a, **kw):
         try:
             return self.session.get(*a, **kw)
         except ConnectionError:
-            log.error(
-                "Failed to connect to Buttervolume. "
-                "You can start it with: buttervolume run"
-            )
+            log.error("Failed to connect to Buttervolume. You can start it with: buttervolume run")
 
 
 def get_from(resp, key):
@@ -87,9 +82,7 @@ def snapshot(args, test=False):
     if test:
         resp = TestApp(app).post(urlpath, param)
     else:
-        resp = Session().post(
-            f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}", param
-        )
+        resp = Session().post(f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}", param)
     res = get_from(resp, "Snapshot")
     if res:
         print(res)
@@ -98,26 +91,20 @@ def snapshot(args, test=False):
 
 def schedule(args):
     urlpath = "/VolumeDriver.Schedule"
-    param = json.dumps(
-        {"Name": args.name[0], "Action": args.action[0], "Timer": args.timer[0]}
-    )
-    resp = Session().post(
-        f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}", param
-    )
+    param = json.dumps({"Name": args.name[0], "Action": args.action[0], "Timer": args.timer[0]})
+    resp = Session().post(f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}", param)
     return get_from(resp, "")
 
 
 def scheduled(args):
     if args.action == "list":
         urlpath = "/VolumeDriver.Schedule.List"
-        resp = Session().get(
-            f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}"
-        )
+        resp = Session().get(f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}")
         scheduled = get_from(resp, "Schedule")
         if scheduled:
             formatted_jobs = []
             for job in scheduled:
-                status = '(paused)' if job.get('Active') == 'False' else ''
+                status = "(paused)" if job.get("Active") == "False" else ""
                 formatted_jobs.append(f"{job['Action']} {job['Timer']} {job['Name']} {status}")
             print("\n".join(formatted_jobs))
         return scheduled
@@ -202,9 +189,7 @@ def sync(args, test=False):
 def remove(args):
     urlpath = "/VolumeDriver.Snapshot.Remove"
     param = json.dumps({"Name": args.name[0]})
-    resp = Session().post(
-        (f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}"), param
-    )
+    resp = Session().post((f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}"), param)
     res = get_from(resp, "")
     if res:
         print(res)
@@ -237,12 +222,12 @@ class Arg:
 def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
     if schedule_log is None:
         schedule_log = {"snapshot": {}, "replicate": {}, "synchronize": {}}
-    if os.path.exists(SCHEDULE_DISABLED):
+    if exists(SCHEDULE_DISABLED):
         log.info("Schedule is globally paused")
     log.info("New scheduler job at %s", datetime.now())
     # open the config and launch the tasks
-    if not os.path.exists(config):
-        if os.path.exists(f"{config}.disabled"):
+    if not exists(config):
+        if exists(f"{config}.disabled"):
             log.warning("Config file disabled: %s", config)
         else:
             log.warning("No config file %s", config)
@@ -253,7 +238,7 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
         for line in csv.DictReader(f, fieldnames=FIELDS):
             try:
                 name, action, timer, enabled = line.values()
-                enabled = False if enabled == "False" else True
+                enabled = enabled != "False"
                 if not enabled:
                     log.info(f"{action} of {name} is disabled")
                     continue
@@ -264,7 +249,7 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                 last = schedule_log[action][name]
                 if now < last + timedelta(minutes=int(timer)):
                     continue
-                if action not in schedule_log.keys():
+                if action not in schedule_log:
                     log.warning("Skipping invalid action %s", action)
                     continue
                 # choose and run the right action
@@ -321,8 +306,7 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                 )
             except Exception as e:
                 log.error(
-                    "Error processing scheduler action file %s "
-                    "name=%s, action=%s, timer=%s\n%s",
+                    "Error processing scheduler action file %s name=%s, action=%s, timer=%s\n%s",
                     config,
                     name,
                     action,
@@ -350,28 +334,133 @@ def shutdown(thread, event):
     log.info("Shutting down buttervolume...")
     event.set()
     thread.join()
-    
+
     # Clean up the socket file to prevent Docker from hanging
-    if os.path.exists(SOCKET):
+    if exists(SOCKET):
         try:
             os.unlink(SOCKET)
             log.info("Cleaned up socket: %s", SOCKET)
         except OSError as e:
             log.warning("Could not remove socket %s: %s", SOCKET, e)
-    
+
     sys.exit(0)  # Use exit code 0 for clean shutdown
 
 
+def init_btrfs(args):
+    """Initialize BTRFS filesystem for buttervolume"""
+    # Check if running as root
+    if os.geteuid() != 0:
+        print("ERROR: buttervolume init must be run as root")
+        return False
+
+    # Default path if no arguments provided
+    target_path = "/var/lib/buttervolume"
+
+    if args.file:
+        # Mode 1: Create BTRFS image file
+        if args.path:
+            print("ERROR: --file and --path cannot be used together")
+            return False
+
+        image_path = args.file
+        image_size = args.size
+
+        print(f"Creating BTRFS image file: {image_path} (size: {image_size})")
+
+        # Create the directory if it doesn't exist
+        os.makedirs(os.path.dirname(image_path), exist_ok=True)
+
+        try:
+            # Create sparse file
+            subprocess.run(["truncate", "-s", image_size, image_path], check=True)
+
+            # Format as BTRFS
+            subprocess.run(["mkfs.btrfs", "-f", image_path], check=True)
+
+            print(f"Successfully created BTRFS image: {image_path}")
+            print(f"To use it, mount it to {target_path}:")
+            print(f"  sudo mount -o loop {image_path} {target_path}")
+
+        except subprocess.CalledProcessError as e:
+            print(f"ERROR: Failed to create BTRFS image: {e}")
+            return False
+    elif args.path:
+        # Mode 2: Use existing BTRFS partition/mount
+        target_path = args.path
+
+        if not os.path.exists(target_path):
+            print(f"ERROR: Path does not exist: {target_path}")
+            return False
+
+        # Check if it's a BTRFS filesystem
+        try:
+            result = subprocess.run(
+                ["stat", "-f", "-c", "%T", target_path], capture_output=True, text=True, check=True
+            )
+            if "btrfs" not in result.stdout.lower():
+                print(f"ERROR: {target_path} is not on a BTRFS filesystem")
+                print("Either:")
+                print("  - Point to a BTRFS partition/mount using --path")
+                print("  - Create a BTRFS image file using --file")
+                return False
+        except subprocess.CalledProcessError:
+            print(f"ERROR: Cannot determine filesystem type for {target_path}")
+            return False
+
+    else:
+        # Mode 3: Default path - check if it's BTRFS
+        if not os.path.exists(target_path):
+            print(f"ERROR: Default path does not exist: {target_path}")
+            print("Either:")
+            print("  - Point to a BTRFS partition/mount using --path")
+            print("  - Create a BTRFS image file using --file")
+            return False
+
+        # Check if it's a BTRFS filesystem
+        try:
+            result = subprocess.run(
+                ["stat", "-f", "-c", "%T", target_path], capture_output=True, text=True, check=True
+            )
+            if "btrfs" not in result.stdout.lower():
+                print(f"ERROR: {target_path} is not on a BTRFS filesystem")
+                print("Either:")
+                print("  - Point to a BTRFS partition/mount using --path")
+                print("  - Create a BTRFS image file using --file")
+                return False
+        except subprocess.CalledProcessError:
+            print(f"ERROR: Cannot determine filesystem type for {target_path}")
+            return False
+
+    # Create required directories (only if we have a valid BTRFS path)
+    if not args.file:  # Don't create dirs for image file mode
+        required_dirs = [
+            os.path.join(target_path, "volumes"),
+            os.path.join(target_path, "snapshots"),
+            os.path.join(target_path, "config"),
+            os.path.join(target_path, "ssh"),
+        ]
+
+        print(f"Creating required directories in {target_path}...")
+        for dir_path in required_dirs:
+            os.makedirs(dir_path, exist_ok=True)
+            print(f"  Created: {dir_path}")
+
+        print(f"Successfully initialized buttervolume at {target_path}")
+        print("You can now start the plugin with: buttervolume run")
+
+    return True
+
+
 def run(_, test=False):
-    if not os.path.exists(VOLUMES_PATH):
+    if not exists(VOLUMES_PATH):
         log.info("Creating %s", VOLUMES_PATH)
         os.makedirs(VOLUMES_PATH, exist_ok=True)
-    if not os.path.exists(SNAPSHOTS_PATH):
+    if not exists(SNAPSHOTS_PATH):
         log.info("Creating %s", SNAPSHOTS_PATH)
         os.makedirs(SNAPSHOTS_PATH, exist_ok=True)
 
     # Clean up any stale socket from previous unclean shutdown
-    if os.path.exists(SOCKET):
+    if exists(SOCKET):
         try:
             os.unlink(SOCKET)
             log.info("Removed stale socket: %s", SOCKET)
@@ -462,10 +551,7 @@ def main():
         nargs="?",
         choices=("list", "pause", "resume"),
         default="list",
-        help=(
-            "Name of the action on the scheduled list "
-            "(list, pause, resume). Default: list"
-        ),
+        help=("Name of the action on the scheduled list (list, pause, resume). Default: list"),
     )
 
     parser_restore = subparsers.add_parser("restore", help="Restore a snapshot")
@@ -499,17 +585,11 @@ def main():
     )
 
     parser_send = subparsers.add_parser("send", help="Send a snapshot to another host")
-    parser_send.add_argument(
-        "host", metavar="host", nargs=1, help="Host to send the snapshot to"
-    )
-    parser_send.add_argument(
-        "snapshot", metavar="snapshot", nargs=1, help="Snapshot to send"
-    )
+    parser_send.add_argument("host", metavar="host", nargs=1, help="Host to send the snapshot to")
+    parser_send.add_argument("snapshot", metavar="snapshot", nargs=1, help="Snapshot to send")
 
     parser_sync = subparsers.add_parser("sync", help="Sync a volume from other host(s)")
-    parser_sync.add_argument(
-        "volumes", metavar="volumes", nargs=1, help="Volumes to sync (1 max)"
-    )
+    parser_sync.add_argument("volumes", metavar="volumes", nargs=1, help="Volumes to sync (1 max)")
     parser_sync.add_argument(
         "hosts",
         metavar="hosts",
@@ -521,9 +601,7 @@ def main():
     parser_remove.add_argument(
         "name", metavar="name", nargs=1, help="Name of the snapshot to delete"
     )
-    parser_purge = subparsers.add_parser(
-        "purge", help="Purge old snapshot using a purge pattern"
-    )
+    parser_purge = subparsers.add_parser("purge", help="Purge old snapshot using a purge pattern")
     parser_purge.add_argument(
         "pattern",
         metavar="pattern",
@@ -551,6 +629,24 @@ def main():
         help="Don't really purge but tell what would be deleted",
     )
 
+    parser_init = subparsers.add_parser("init", help="Initialize BTRFS filesystem for buttervolume")
+    init_group = parser_init.add_mutually_exclusive_group()
+    init_group.add_argument(
+        "--path",
+        help="Path to existing BTRFS partition/mount",
+    )
+    init_group.add_argument(
+        "--file",
+        nargs="?",
+        const="/var/lib/docker/btrfs.img",
+        help="Create BTRFS image file (default: /var/lib/docker/btrfs.img)",
+    )
+    parser_init.add_argument(
+        "--size",
+        default="10G",
+        help="Size of BTRFS image file, only with --file (default: 10G)",
+    )
+
     parser_run.set_defaults(func=run)
     parser_snapshot.set_defaults(func=snapshot)
     parser_snapshots.set_defaults(func=snapshots)
@@ -562,6 +658,7 @@ def main():
     parser_sync.set_defaults(func=sync)
     parser_remove.set_defaults(func=remove)
     parser_purge.set_defaults(func=purge)
+    parser_init.set_defaults(func=init_btrfs)
 
     args = parser.parse_args()
     if hasattr(args, "func"):
