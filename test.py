@@ -859,6 +859,29 @@ class TestCase(unittest.TestCase):
             ),
         )
 
+    def test_init_file(self):
+        """Test the buttervolume init --file command"""
+        from unittest.mock import patch, MagicMock
+        from buttervolume.cli import init_btrfs
+        
+        # Test image file creation
+        with patch('os.geteuid', return_value=0), \
+             patch('os.makedirs'), \
+             patch('subprocess.run') as mock_run:
+            
+            args = MagicMock()
+            args.file = "/tmp/test.img"
+            args.path = None
+            args.size = "10G"
+            
+            result = init_btrfs(args)
+            self.assertTrue(result)
+            
+            # Check that subprocess.run was called for truncate and mkfs.btrfs
+            calls = mock_run.call_args_list
+            self.assertTrue(any('truncate' in str(call) for call in calls))
+            self.assertTrue(any('mkfs.btrfs' in str(call) for call in calls))
+
     def test_capabilities(self):
         rsp = jsonloads(self.app.post("/VolumeDriver.Capabilities", "{}").body)
         self.assertEqual(rsp.get("Capabilities", {}).get("Scope"), "local")
