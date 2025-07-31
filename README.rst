@@ -65,7 +65,24 @@ Prerequisites
 Make sure the directory ``/var/lib/buttervolume/`` is living in a BTRFS
 filesystem. It can be a BTRFS mountpoint or a BTRFS subvolume or both.
 
-You should also create the directories for the config and ssh on the host::
+**Initial Setup**
+
+Use the ``buttervolume init`` command to easily set up the BTRFS environment::
+
+    # Default setup - checks /var/lib/buttervolume is on BTRFS and creates required directories
+    sudo buttervolume init
+    
+    # Custom BTRFS path - uses existing BTRFS filesystem at specified path
+    sudo buttervolume init --path /custom/btrfs/path
+    
+    # Image file - creates a new BTRFS image file
+    sudo buttervolume init --file /var/lib/docker/btrfs.img --size 20G
+
+The init command must be run as root and automatically creates the required directory structure (config, ssh, volumes, snapshots).
+
+**Manual Setup (Alternative)**
+
+If you prefer manual setup, create the directories for the config and ssh on the host::
 
     sudo mkdir /var/lib/buttervolume
     sudo mkdir /var/lib/buttervolume/config
@@ -299,6 +316,7 @@ Managing volumes and snapshots
 When buttervolume is installed, it provides a command line tool
 ``buttervolume``, with the following subcommands::
 
+    init                Initialize BTRFS filesystem for buttervolume
     run                 Run the plugin in foreground
     snapshot            Snapshot a volume
     snapshots           List snapshots
