@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 import uuid
 import weakref
@@ -43,7 +44,7 @@ class TestCase(unittest.TestCase):
                             items_to_delete.append(join(directory, item))
                 except FileNotFoundError:
                     continue
-                
+
                 # Delete each item, trying both BTRFS and regular deletion
                 for item_path in items_to_delete:
                     try:
@@ -55,6 +56,7 @@ class TestCase(unittest.TestCase):
                                 except Exception:
                                     # If BTRFS deletion fails, try regular directory removal
                                     import shutil
+
                                     shutil.rmtree(item_path, ignore_errors=True)
                             else:
                                 # Regular file
@@ -80,20 +82,17 @@ class TestCase(unittest.TestCase):
                     except Exception:
                         raise unittest.SkipTest(
                             f"BTRFS filesystem required at {VOLUMES_PATH}. Error: {e}"
-                        )
+                        ) from None
                 else:
                     raise unittest.SkipTest(
                         f"BTRFS filesystem required at {VOLUMES_PATH}. Error: {e}"
-                    )
+                    ) from None
         self.cleanup()
 
     def _try_create_btrfs_filesystem(self):
         """Try to create a BTRFS filesystem for testing"""
         if os.getuid() != 0:
             return False
-
-        import time
-        import subprocess
 
         # Create sparse file and loop device
         loop_file = f"/tmp/btrfs_test_{int(time.time())}.img"
@@ -138,9 +137,9 @@ class TestCase(unittest.TestCase):
                 parts = line.split()
                 if len(parts) >= 6:
                     loop_dev, backing_file = parts[0], parts[5]
-                    if backing_file.startswith(
-                        "/tmp/btrfs_test"
-                    ) and not os.path.exists(backing_file):
+                    if backing_file.startswith("/tmp/btrfs_test") and not os.path.exists(
+                        backing_file
+                    ):
                         subprocess.run(["losetup", "-d", loop_dev], capture_output=True)
         except Exception:
             pass  # Don't fail the test if cleanup fails
@@ -163,23 +162,17 @@ class TestCase(unittest.TestCase):
         # create a volume
         name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
         path = join(VOLUMES_PATH, name)
-        resp = jsonloads(
-            self.app.post("/VolumeDriver.Create", json.dumps({"Name": name})).body
-        )
+        resp = jsonloads(self.app.post("/VolumeDriver.Create", json.dumps({"Name": name})).body)
         self.assertEqual(resp, {"Err": ""})
 
         # get
-        resp = jsonloads(
-            self.app.post("/VolumeDriver.Get", json.dumps({"Name": name})).body
-        )
+        resp = jsonloads(self.app.post("/VolumeDriver.Get", json.dumps({"Name": name})).body)
         self.assertEqual(resp["Volume"]["Name"], name)
         self.assertEqual(resp["Volume"]["Mountpoint"], path)
         self.assertEqual(resp["Err"], "")
 
         # create the same volume
-        resp = jsonloads(
-            self.app.post("/VolumeDriver.Create", json.dumps({"Name": name})).body
-        )
+        resp = jsonloads(self.app.post("/VolumeDriver.Create", json.dumps({"Name": name})).body)
         self.assertEqual(resp, {"Err": ""})
 
         # list
@@ -187,25 +180,17 @@ class TestCase(unittest.TestCase):
         self.assertEqual(resp["Volumes"], [{"Name": name}])
 
         # mount
-        resp = jsonloads(
-            self.app.post("/VolumeDriver.Mount", json.dumps({"Name": name})).body
-        )
+        resp = jsonloads(self.app.post("/VolumeDriver.Mount", json.dumps({"Name": name})).body)
         self.assertEqual(resp["Mountpoint"], join(VOLUMES_PATH, name))
-        resp = jsonloads(
-            self.app.post("/VolumeDriver.Mount", json.dumps({"Name": name})).body
-        )
+        resp = jsonloads(self.app.post("/VolumeDriver.Mount", json.dumps({"Name": name})).body)
         self.assertEqual(resp["Mountpoint"], join(VOLUMES_PATH, name))
         # not existing path
         name2 = PREFIX_TEST_VOLUME + uuid.uuid4().hex
-        resp = jsonloads(
-            self.app.post("/VolumeDriver.Mount", json.dumps({"Name": name2})).body
-        )
+        resp = jsonloads(self.app.post("/VolumeDriver.Mount", json.dumps({"Name": name2})).body)
         self.assertTrue(resp["Err"].endswith("no such volume"))
 
         # path
-        resp = jsonloads(
-            self.app.post("/VolumeDriver.Path", json.dumps({"Name": name})).body
-        )
+        resp = jsonloads(self.app.post("/VolumeDriver.Path", json.dumps({"Name": name})).body)
         self.assertEqual(resp["Mountpoint"], join(VOLUMES_PATH, name))
         # not existing path
         resp = jsonloads(
@@ -217,9 +202,7 @@ class TestCase(unittest.TestCase):
         self.assertTrue(resp["Err"].endswith("no such volume"))
 
         # unmount
-        resp = jsonloads(
-            self.app.post("/VolumeDriver.Unmount", json.dumps({"Name": name})).body
-        )
+        resp = jsonloads(self.app.post("/VolumeDriver.Unmount", json.dumps({"Name": name})).body)
         self.assertEqual(resp, {"Err": ""})
         resp = jsonloads(
             self.app.post(
@@ -230,20 +213,14 @@ class TestCase(unittest.TestCase):
         self.assertEqual(resp, {"Err": ""})
 
         # remove
-        resp = jsonloads(
-            self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name})).body
-        )
+        resp = jsonloads(self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name})).body)
         self.assertEqual(resp, {"Err": ""})
         # remove again
-        resp = jsonloads(
-            self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name})).body
-        )
+        resp = jsonloads(self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name})).body)
         self.assertTrue(resp["Err"].endswith("no such volume"))
 
         # get
-        resp = jsonloads(
-            self.app.post("/VolumeDriver.Get", json.dumps({"Name": name})).body
-        )
+        resp = jsonloads(self.app.post("/VolumeDriver.Get", json.dumps({"Name": name})).body)
         self.assertTrue(resp["Err"].endswith("no such volume"))
 
         # list
@@ -260,10 +237,7 @@ class TestCase(unittest.TestCase):
         # mount
         self.app.post("/VolumeDriver.Mount", json.dumps({"Name": name}))
         # check the nocow
-        self.assertTrue(
-            b"-C-"
-            not in check_output(f"lsattr -d '{path}'", shell=True).split()[0]
-        )
+        self.assertTrue(b"-C-" not in check_output(f"lsattr -d '{path}'", shell=True).split()[0])
         self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name}))
 
     def test_compression_option(self):
@@ -310,7 +284,9 @@ class TestCase(unittest.TestCase):
         self.assertEqual(resp, {"Err": ""})
         self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name3}))
 
-    @unittest.skipIf(os.environ.get("BUTTERVOLUME_LOCAL_TEST"), "SSH not available in local test mode")
+    @unittest.skipIf(
+        os.environ.get("BUTTERVOLUME_LOCAL_TEST"), "SSH not available in local test mode"
+    )
     def test_send(self):
         """We can send a snapshot incrementally to another host"""
         # create a volume with a file
@@ -328,9 +304,8 @@ class TestCase(unittest.TestCase):
         )
         remote_path = join(TEST_REMOTE_PATH, snapshot)
         # check the volumes have the same content
-        with open(join(snapshot_path, "foobar")) as x:
-            with open(join(remote_path, "foobar")) as y:
-                self.assertEqual(x.read(), y.read())
+        with open(join(snapshot_path, "foobar")) as x, open(join(remote_path, "foobar")) as y:
+            self.assertEqual(x.read(), y.read())
         # change files in the master volume
         with open(join(path, "foobar"), "w") as f:
             f.write("changed foobar")
@@ -344,9 +319,8 @@ class TestCase(unittest.TestCase):
         )
         remote_path2 = join(TEST_REMOTE_PATH, snapshot2)
         # check the files are the same
-        with open(join(snapshot2_path, "foobar")) as x:
-            with open(join(remote_path2, "foobar")) as y:
-                self.assertEqual(x.read(), y.read())
+        with open(join(snapshot2_path, "foobar")) as x, open(join(remote_path2, "foobar")) as y:
+            self.assertEqual(x.read(), y.read())
         # check the second snapshot is a child of the first one
         self.assertEqual(
             btrfs.Subvolume(remote_path).show()["UUID"],
@@ -366,9 +340,8 @@ class TestCase(unittest.TestCase):
             self.fail(f"Snapshot creation failed: {resp_data['Err']}")
         snapshot = join(SNAPSHOTS_PATH, resp_data["Snapshot"])
         # check the snapshot has the same content
-        with open(join(path, "foobar")) as x:
-            with open(join(snapshot, "foobar")) as y:
-                self.assertEqual(x.read(), y.read())
+        with open(join(path, "foobar")) as x, open(join(snapshot, "foobar")) as y:
+            self.assertEqual(x.read(), y.read())
 
     def test_snapshots(self):
         """Check we can list snapshots"""
@@ -390,12 +363,12 @@ class TestCase(unittest.TestCase):
         resp = self.app.get("/VolumeDriver.Snapshot.List")
         snapshots = json.loads(resp.body.decode())["Snapshots"]
         # check the list of snapshots
-        self.assertEqual(set(snapshots), set([snap1, snap2, snap3, snap4]))
+        self.assertEqual(set(snapshots), {snap1, snap2, snap3, snap4})
         # list all the snapshots of the second volume only
         resp = self.app.get(f"/VolumeDriver.Snapshot.List/{name2}")
         snapshots = json.loads(resp.body.decode())["Snapshots"]
         # check the list of snapshots
-        self.assertEqual(set(snapshots), set([snap3, snap4]))
+        self.assertEqual(set(snapshots), {snap3, snap4})
 
     def test_schedule_snapshot(self):
         """check we can schedule actions such as snapshots"""
@@ -432,13 +405,9 @@ class TestCase(unittest.TestCase):
         # check we have two snapshots
         self.assertEqual(
             2,
-            len(
-                {
-                    s
-                    for s in os.listdir(SNAPSHOTS_PATH)
-                    if s.startswith(name) or s.startswith(name2)
-                }
-            ),
+            len({
+                s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name) or s.startswith(name2)
+            }),
         )
         # unschedule
         self.app.post(
@@ -458,13 +427,9 @@ class TestCase(unittest.TestCase):
         runjobs(SCHEDULE, test=True, schedule_log=schedule_log)
         self.assertEqual(
             3,
-            len(
-                {
-                    s
-                    for s in os.listdir(SNAPSHOTS_PATH)
-                    if s.startswith(name) or s.startswith(name2)
-                }
-            ),
+            len({
+                s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name) or s.startswith(name2)
+            }),
         )
         # unschedule the last job
         self.app.post(
@@ -480,7 +445,9 @@ class TestCase(unittest.TestCase):
             json.dumps({"Name": name, "Action": "snapshot", "Timer": 0}),
         )
 
-    @unittest.skipIf(os.environ.get("BUTTERVOLUME_LOCAL_TEST"), "SSH not available in local test mode")
+    @unittest.skipIf(
+        os.environ.get("BUTTERVOLUME_LOCAL_TEST"), "SSH not available in local test mode"
+    )
     def test_schedule_replicate(self):
         # create a volume with a file
         name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
@@ -504,30 +471,20 @@ class TestCase(unittest.TestCase):
             json.dumps({"Name": "boo", "Action": "replicate:localhost", "Timer": 120}),
         )
         # simulate the last replicate is 1 day in the past
-        schedule_log = {
-            "replicate:localhost": {name: datetime.now() - timedelta(days=1)}
-        }
+        schedule_log = {"replicate:localhost": {name: datetime.now() - timedelta(days=1)}}
         # run the scheduler jobs jobs and check we only have two more snapshots
         runjobs(SCHEDULE, test=True, schedule_log=schedule_log)
         self.assertEqual(
             2,
-            len(
-                {
-                    s
-                    for s in os.listdir(SNAPSHOTS_PATH)
-                    if s.startswith(name) or s.startswith(name)
-                }
-            ),
+            len({
+                s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name) or s.startswith(name)
+            }),
         )
         self.assertEqual(
             1,
-            len(
-                {
-                    s
-                    for s in os.listdir(TEST_REMOTE_PATH)
-                    if s.startswith(name) or s.startswith(name)
-                }
-            ),
+            len({
+                s for s in os.listdir(TEST_REMOTE_PATH) if s.startswith(name) or s.startswith(name)
+            }),
         )
         # unschedule the last job
         self.app.post(
@@ -552,9 +509,7 @@ class TestCase(unittest.TestCase):
         with open(join(path, "foobar"), "w") as f:
             f.write("modified foobar")
         # overwrite the volume with the snapshot
-        resp = self.app.post(
-            "/VolumeDriver.Snapshot.Restore", json.dumps({"Name": snapshot})
-        )
+        resp = self.app.post("/VolumeDriver.Snapshot.Restore", json.dumps({"Name": snapshot}))
         # check the volume has the original content
         with open(join(path, "foobar")) as f:
             self.assertEqual(f.read(), "foobar")
@@ -592,9 +547,7 @@ class TestCase(unittest.TestCase):
         path2 = join(VOLUMES_PATH, name2)
 
         # clone name as new volume name2
-        self.app.post(
-            "/VolumeDriver.Clone", json.dumps({"Name": name, "Target": name2})
-        )
+        self.app.post("/VolumeDriver.Clone", json.dumps({"Name": name, "Target": name2}))
 
         # check the cloned volume has a copy of the original content
         with open(join(path2, "foobar")) as f:
@@ -611,9 +564,7 @@ class TestCase(unittest.TestCase):
 
     def create_20_hourly_snapshots(self, name):
         path = join(VOLUMES_PATH, name)
-        hours = [
-            (datetime.now() - timedelta(hours=h)).strftime(DTFORMAT) for h in range(20)
-        ]
+        hours = [(datetime.now() - timedelta(hours=h)).strftime(DTFORMAT) for h in range(20)]
         for h in hours:
             run(
                 f"btrfs subvolume snapshot {path} {join(SNAPSHOTS_PATH, name)}@{h}",
@@ -625,9 +576,7 @@ class TestCase(unittest.TestCase):
             shell=True,
         )
         run(
-            "btrfs subvolume snapshot {} {}@{}".format(
-                path, join(SNAPSHOTS_PATH, name), "invalid"
-            ),
+            "btrfs subvolume snapshot {} {}@{}".format(path, join(SNAPSHOTS_PATH, name), "invalid"),
             shell=True,
         )
 
@@ -718,10 +667,7 @@ class TestCase(unittest.TestCase):
 
     def test_compute_purge2(self):
         now = datetime.now()
-        snapshots = [
-            "foobar@" + (now - timedelta(hours=h)).strftime(DTFORMAT)
-            for h in range(3000)
-        ]
+        snapshots = ["foobar@" + (now - timedelta(hours=h)).strftime(DTFORMAT) for h in range(3000)]
         for now in [now + timedelta(hours=h) for h in range(3000)]:
             purge_list = compute_purges(  # 1d:1w:4w:1y
                 snapshots, [60 * 24, 60 * 24 * 7, 60 * 24 * 7 * 4, 60 * 24 * 365], now
@@ -749,7 +695,9 @@ class TestCase(unittest.TestCase):
             json.dumps({"Name": name, "Action": "purge:2h:2h", "Timer": 0}),
         )
 
-    @unittest.skipIf(os.environ.get("BUTTERVOLUME_LOCAL_TEST"), "SSH not available in local test mode")
+    @unittest.skipIf(
+        os.environ.get("BUTTERVOLUME_LOCAL_TEST"), "SSH not available in local test mode"
+    )
     def test_synchronization(self):
         """Check we can synchronize a volume"""
         # create a volume with a file
@@ -765,13 +713,11 @@ class TestCase(unittest.TestCase):
                 f.write("test sync")
             self.app.post(
                 "/VolumeDriver.Volume.Sync",
-                json.dumps(
-                    {
-                        "Volumes": [name],
-                        "Hosts": ["localhost"],
-                        "Test": True,
-                    }
-                ),
+                json.dumps({
+                    "Volumes": [name],
+                    "Hosts": ["localhost"],
+                    "Test": True,
+                }),
             )
             with open(join(path, "foobar")) as x:
                 self.assertEqual(x.read(), "test sync")
@@ -780,18 +726,18 @@ class TestCase(unittest.TestCase):
                 f.write("foobar")
             self.app.post(
                 "/VolumeDriver.Volume.Sync",
-                json.dumps(
-                    {
-                        "Volumes": [name],
-                        "Hosts": ["localhost"],
-                        "Test": True,
-                    }
-                ),
+                json.dumps({
+                    "Volumes": [name],
+                    "Hosts": ["localhost"],
+                    "Test": True,
+                }),
             )
             with open(join(path, "foobar")) as x:
                 self.assertEqual(x.read(), "test sync")
 
-    @unittest.skipIf(os.environ.get("BUTTERVOLUME_LOCAL_TEST"), "SSH not available in local test mode")
+    @unittest.skipIf(
+        os.environ.get("BUTTERVOLUME_LOCAL_TEST"), "SSH not available in local test mode"
+    )
     def test_schedule_synchronization(self):
         # create a volume with a file
         name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
@@ -810,26 +756,20 @@ class TestCase(unittest.TestCase):
         # responding we should synchronise other hosts
         self.app.post(
             "/VolumeDriver.Schedule",
-            json.dumps(
-                {
-                    "Name": name,
-                    "Action": "synchronize:localhost,wronghost.mlf",
-                    "Timer": 120,
-                }
-            ),
+            json.dumps({
+                "Name": name,
+                "Action": "synchronize:localhost,wronghost.mlf",
+                "Timer": 120,
+            }),
         )
         # also replicate a non existing volume
         self.app.post(
             "/VolumeDriver.Schedule",
-            json.dumps(
-                {"Name": "boo", "Action": "synchronize:localhost", "Timer": 120}
-            ),
+            json.dumps({"Name": "boo", "Action": "synchronize:localhost", "Timer": 120}),
         )
         # simulate the last synchronize is 1 day in the past
         schedule_log = {
-            "synchronize:localhost,wronghost.mlf": {
-                name: datetime.now() - timedelta(days=1)
-            }
+            "synchronize:localhost,wronghost.mlf": {name: datetime.now() - timedelta(days=1)}
         }
         with TemporaryDirectory(path=remote_path) as remote_path:
             with open(join(remote_path, "foobar"), "w") as f:
@@ -850,14 +790,45 @@ class TestCase(unittest.TestCase):
         )
         self.app.post(
             "/VolumeDriver.Schedule",
-            json.dumps(
-                {
-                    "Name": name,
-                    "Action": "synchronize:localhost,wronghost.mlf",
-                    "Timer": 0,
-                }
-            ),
+            json.dumps({
+                "Name": name,
+                "Action": "synchronize:localhost,wronghost.mlf",
+                "Timer": 0,
+            }),
         )
+
+    def test_init_file(self):
+        """Test the buttervolume init --file command"""
+        from unittest.mock import MagicMock, patch
+
+        from buttervolume.cli import init_btrfs
+
+        # Test image file creation as non-root user (should work in user directory)
+        with patch("os.geteuid", return_value=1000), patch("os.access", return_value=True), patch(
+            "os.makedirs"
+        ), patch("subprocess.run") as mock_run:
+            args = MagicMock()
+            args.file = "/home/user/test.img"
+            args.path = None
+            args.size = "10G"
+
+            result = init_btrfs(args)
+            self.assertTrue(result)
+
+            # Check that subprocess.run was called for truncate and mkfs.btrfs
+            calls = mock_run.call_args_list
+            self.assertTrue(any("truncate" in str(call) for call in calls))
+            self.assertTrue(any("mkfs.btrfs" in str(call) for call in calls))
+
+        # Test image file creation in system directory (should fail as non-root)
+        with patch("os.geteuid", return_value=1000), patch("os.access", return_value=False):
+            args = MagicMock()
+            args.file = "/var/lib/docker/test.img"
+            args.path = None
+            args.size = "10G"
+
+            result = init_btrfs(args)
+            self.assertFalse(result)
 
     def test_capabilities(self):
         rsp = jsonloads(self.app.post("/VolumeDriver.Capabilities", "{}").body)
@@ -878,9 +849,7 @@ class TemporaryDirectory(tempfile.TemporaryDirectory):
 
     def __init__(self, suffix=None, prefix=None, dir=None, path=None):
         self.name = self.mkdir(path) if path else tempfile.mkdtemp(suffix, prefix, dir)
-        self._ignore_cleanup_errors = (
-            False  # Add missing attribute for Python 3.11+ compatibility
-        )
+        self._ignore_cleanup_errors = False  # Add missing attribute for Python 3.11+ compatibility
         self._finalizer = weakref.finalize(
             self,
             self._cleanup,
