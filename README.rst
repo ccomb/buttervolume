@@ -226,6 +226,61 @@ If you need to run the buttervolume CLI from within a Docker container, you need
       buttervolume-cli buttervolume scheduled
 
 
+Migrating existing Docker volumes
+**********************************
+
+To migrate existing Docker volumes to buttervolume, the approach depends on whether your volumes are already on a BTRFS filesystem.
+
+**If /var/lib/docker/volumes is on the same BTRFS partition as /var/lib/buttervolume:**
+
+You can efficiently move or snapshot existing volumes::
+
+    # Stop containers using the volumes first
+    docker stop <container-using-volume>
+    
+    # Method 1: Move the volume (fastest)
+    sudo mv /var/lib/docker/volumes/<volume-name>/_data /var/lib/buttervolume/volumes/<volume-name>
+    
+    # Method 2: Create BTRFS snapshot (preserves original)
+    sudo btrfs subvolume snapshot /var/lib/docker/volumes/<volume-name>/_data /var/lib/buttervolume/volumes/<volume-name>
+
+**If /var/lib/docker/volumes is NOT on BTRFS:**
+
+You need to copy the data::
+
+    # Stop containers using the volumes first
+    docker stop <container-using-volume>
+    
+    # Create buttervolume and copy data
+    docker volume create -d ccomb/buttervolume:latest <volume-name>
+    sudo cp -ar /var/lib/docker/volumes/<volume-name>/_data/* /var/lib/buttervolume/volumes/<volume-name>/
+    
+    # Remove old volume after verifying data integrity
+    docker volume rm <volume-name>
+
+**Update your containers:**
+
+After migration, update your containers to use the new buttervolume driver::
+
+    # In docker-compose.yml
+    volumes:
+      my-data:
+        driver: ccomb/buttervolume:latest
+    
+    # Or with docker run
+    docker run -v my-data:/data --volume-driver=ccomb/buttervolume:latest myimage
+
+**Verification:**
+
+Test that your migrated volumes work correctly before removing the originals::
+
+    # Check volume exists
+    docker volume ls -f driver=ccomb/buttervolume:latest
+    
+    # Test with a temporary container
+    docker run --rm -v <volume-name>:/test --volume-driver=ccomb/buttervolume:latest alpine ls -la /test
+
+
 Configure
 *********
 
