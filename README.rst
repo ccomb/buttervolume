@@ -515,12 +515,14 @@ the remote host.
 
 ``<host>`` is the hostname or IP address of the remote host. The snapshot is
 currently sent using BTRFS send/receive through ssh, with an ssh server direcly
-included in the plugin. This requires that ssh keys be present and already
-authorized on the target host (under ``/var/lib/buttervolume/ssh``), and that
-the ``StrictHostKeyChecking no`` option be enabled in
-``/var/lib/buttervolume/ssh/config`` on local host.
+included in the plugin. 
 
-Please note you have to restart you docker daemons each time you change ssh configuration.
+**SSH Configuration Requirements:**
+
+- SSH keys and configuration must be in ``/var/lib/buttervolume/ssh/`` (NOT in ``~/.ssh/``)
+- SSH keys must be present and authorized on target hosts  
+- Enable ``StrictHostKeyChecking no`` in ``/var/lib/buttervolume/ssh/config``
+- **Important**: Restart Docker daemons after any SSH configuration changes
 
 The default SSH_PORT of the ssh server included in the plugin is **1122**. You can
 change it with `docker plugin set ccomb/buttervolume SSH_PORT=<PORT>` before
