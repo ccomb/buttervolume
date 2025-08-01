@@ -43,18 +43,32 @@ class Session:
     def __init__(self):
         self.session = requests_unixsocket.Session()
 
+    def _log_connection_error(self):
+        """Log connection error with helpful guidance"""
+        log.error("Failed to connect to Buttervolume plugin.")
+
+        # Check if we're running in a container
+        if os.path.exists("/.dockerenv") or os.environ.get("BUTTERVOLUME_IN_CONTAINER"):
+            log.error("Running in container detected. To use buttervolume CLI in a container:")
+            log.error("1. Mount Docker socket: -v /var/run/docker.sock:/var/run/docker.sock")
+            log.error("2. Mount plugin sockets: -v /run/docker/plugins:/run/docker/plugins")
+            log.error("3. Or override socket path: -e BUTTERVOLUME_SOCKET=/path/to/btrfs.sock")
+        else:
+            log.error("You can start the plugin with: buttervolume run")
+            log.error("Or install the Docker plugin: docker plugin install ccomb/buttervolume")
+
     def post(self, *a, **kw):
         try:
             return self.session.post(*a, **kw)
         except ConnectionError:
-            log.error("Failed to connect to Buttervolume. You can start it with: buttervolume run")
+            self._log_connection_error()
             return
 
     def get(self, *a, **kw):
         try:
             return self.session.get(*a, **kw)
         except ConnectionError:
-            log.error("Failed to connect to Buttervolume. You can start it with: buttervolume run")
+            self._log_connection_error()
 
 
 def get_from(resp, key):

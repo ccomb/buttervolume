@@ -190,6 +190,42 @@ You must force disable it before reinstalling it (as explained in the docker doc
     docker plugin install ccomb/buttervolume
 
 
+Using buttervolume CLI in a container
+*************************************
+
+If you need to run the buttervolume CLI from within a Docker container, you need to ensure proper access to the Docker daemon and plugin sockets.
+
+**Method 1: Mount required directories**::
+
+    docker run --rm -it \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      -v /run/docker/plugins:/run/docker/plugins \
+      your-container-with-buttervolume buttervolume scheduled
+
+**Method 2: Override socket path**::
+
+    # If you know the exact socket path
+    docker run --rm -it \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      -v /run/docker/plugins:/run/docker/plugins \
+      -e BUTTERVOLUME_SOCKET=/run/docker/plugins/<plugin-id>/btrfs.sock \
+      your-container-with-buttervolume buttervolume scheduled
+
+**Creating a CLI container**::
+
+    # Dockerfile
+    FROM python:alpine
+    RUN pip install buttervolume
+    COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker
+
+    # Usage
+    docker build -t buttervolume-cli .
+    docker run --rm -it \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      -v /run/docker/plugins:/run/docker/plugins \
+      buttervolume-cli buttervolume scheduled
+
+
 Configure
 *********
 
