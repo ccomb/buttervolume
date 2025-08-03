@@ -720,33 +720,70 @@ def snapshots_purge(req):
     # Validate volume name
     validate_volume_name(volume_name)
 
-    # convert the pattern to seconds, check validity and reorder
-    units = {"m": 1, "h": 60, "d": 60 * 24, "w": 60 * 24 * 7, "y": 60 * 24 * 365}
-    try:
-        split = req["Pattern"].split(":")
-        assert len(split) >= 2, "Pattern must have at least 2 components"
-        assert all(p[:-1].isnumeric() for p in split), (
-            "Pattern components must be numeric with unit suffix"
-        )
-        letters = [units[p[-1]] for p in split]
-        assert all(x < y for x, y in zip(letters, letters[1:])), (
-            "Time units must be in ascending order (m < h < d < w < y)"
-        )
-        pattern = sorted(int(i[:-1]) * units[i[-1]] for i in split)
-    except (ValueError, KeyError, AssertionError) as e:
-        raise ValidationError(f"Invalid purge pattern: {req['Pattern']} - {str(e)}") from None
+    # Validate pattern with strict rules (no backward compatibility for immediate purge)
+    pattern, _ = validate_purge_pattern(req["Pattern"], allow_backward_compat=False)
 
     # snapshots related to the volume, more recents first
-    snapshots = (s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(volume_name + "@"))
+    snapshots = [s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(volume_name + "@")]
 
-    for snapshot in compute_purges(snapshots, pattern, datetime.now()):
+    # Compute which snapshots to purge
+    now = datetime.now()
+    purge_list = compute_purges(snapshots, pattern, now)
+
+    for snapshot in purge_list:
         if dryrun:
             log.info(f"(Dry run) Would delete snapshot {snapshot}")
         else:
+            # Delete the BTRFS subvolume (xattrs are automatically deleted with it)
             btrfs.Subvolume(join(SNAPSHOTS_PATH, snapshot)).delete()
             log.info(f"Deleted snapshot {snapshot}")
 
     return {"Err": ""}
+
+
+def validate_purge_pattern(pattern_str, allow_backward_compat=False):
+    """Validate and optionally convert purge patterns
+    
+    Args:
+        pattern_str: Pattern string like "2h:1d" or "2h"
+        allow_backward_compat: If True, convert "2h:2h" to "2h" with warning
+        
+    Returns:
+        tuple: (converted_pattern_list, warning_message_or_none)
+        
+    Raises:
+        ValidationError: If pattern is invalid
+    """
+    units = {"m": 1, "h": 60, "d": 60 * 24, "w": 60 * 24 * 7, "y": 60 * 24 * 365}
+    warning = None
+    
+    try:
+        split = pattern_str.split(":")
+        assert len(split) >= 1, "Pattern must have at least 1 component"
+        assert all(p[:-1].isnumeric() for p in split), (
+            "Pattern components must be numeric with unit suffix"
+        )
+        
+        # Backward compatibility: convert "2h:2h" pattern to "2h" with warning
+        if allow_backward_compat and len(split) == 2 and split[0] == split[1]:
+            warning = f"Converting deprecated pattern '{pattern_str}' to '{split[0]}'. " \
+                     f"Please update your schedule using 'buttervolume scheduled --auto-convert-old-patterns'."
+            split = [split[0]]
+        elif not allow_backward_compat and len(split) == 2 and split[0] == split[1]:
+            raise ValidationError(f"Invalid pattern '{pattern_str}'. Use '{split[0]}' instead of duplicate components.")
+        
+        # Check ascending order for multi-component patterns - by time values, not just units
+        if len(split) > 1:
+            time_values = [int(p[:-1]) * units[p[-1]] for p in split]
+            assert all(x < y for x, y in zip(time_values, time_values[1:])), (
+                "Time values must be in ascending order (e.g., 2h:4h:8h or 30m:2h:1d)"
+            )
+        
+        pattern = sorted(int(i[:-1]) * units[i[-1]] for i in split)
+        return pattern, warning
+        
+    except (ValueError, KeyError, AssertionError) as e:
+        raise ValidationError(f"Invalid purge pattern: {pattern_str} - {str(e)}") from None
 
 
 def compute_purges(snapshots, pattern, now):
@@ -772,6 +809,17 @@ def compute_purges(snapshots, pattern, now):
             continue
     if not valid_snapshots:
         return purge_list
+    
+    # Handle single pattern case (e.g., "2h" -> [120])
+    if len(pattern) == 1:
+        # For single pattern, delete everything older than the threshold
+        threshold = pattern[0]
+        for i, age in enumerate(snapshots_age):
+            if age > threshold:
+                purge_list.append(valid_snapshots[i])
+        return purge_list
+    
+    # Handle multi-pattern case (e.g., "2h:1d:1w" -> [120, 1440, 10080])
     # pattern = 3600:180:60
     # age segments = [(3600, 180), (180, 60)]
     for age_segment in [(pattern[i], pattern[i + 1]) for i, _ in enumerate(pattern[:-1])]:

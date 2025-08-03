@@ -1,4 +1,5 @@
 import os
+from contextlib import suppress
 from subprocess import PIPE, CalledProcessError, TimeoutExpired
 from subprocess import run as _run
 
@@ -49,14 +50,14 @@ def btrfs_operation(error_type, error_msg, timeout=60):
                 stderr_output = e.stderr.decode() if e.stderr else "No error output"
                 raise error_type(
                     f"{error_msg}: BTRFS command failed: {cmd_str}\nStderr: {stderr_output}"
-                )
+                ) from None
             except TimeoutExpired:
                 cmd_str = " ".join(cmd_list)
                 raise error_type(
                     f"{error_msg}: BTRFS command timed out after {timeout}s: {cmd_str}"
-                )
+                ) from None
             except Exception as e:
-                raise error_type(f"{error_msg} - unexpected error: {str(e)}")
+                raise error_type(f"{error_msg} - unexpected error: {str(e)}") from None
 
         return wrapper
 
@@ -77,10 +78,10 @@ def run_safe(cmd_list, check=True, stdout=PIPE, stderr=PIPE, timeout=60):
     except CalledProcessError as e:
         cmd_str = " ".join(cmd_list)
         stderr_output = e.stderr.decode() if e.stderr else "No error output"
-        raise BtrfsError(f"BTRFS command failed: {cmd_str}\nStderr: {stderr_output}")
+        raise BtrfsError(f"BTRFS command failed: {cmd_str}\nStderr: {stderr_output}") from None
     except TimeoutExpired:
         cmd_str = " ".join(cmd_list)
-        raise BtrfsError(f"BTRFS command timed out after {timeout}s: {cmd_str}")
+        raise BtrfsError(f"BTRFS command timed out after {timeout}s: {cmd_str}") from None
 
 
 class Subvolume:

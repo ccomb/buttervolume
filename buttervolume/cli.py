@@ -110,17 +110,126 @@ def schedule(args):
     return get_from(resp, "")
 
 
+def _auto_convert_old_patterns():
+    """Convert deprecated purge patterns in schedule.csv"""
+    config = SCHEDULE
+    if not exists(config):
+        print(f"Schedule file not found: {config}")
+        return False
+    
+    # Read current schedule
+    updates = []
+    needs_conversion = False
+    
+    with open(config, 'r') as f:
+        for line in csv.DictReader(f, fieldnames=FIELDS):
+            name, action, timer, enabled = line.values()
+            
+            if action.startswith("purge:"):
+                _, pattern = action.split(":", 1)
+                try:
+                    from buttervolume.plugin import validate_purge_pattern
+                    converted_pattern, warning = validate_purge_pattern(pattern, allow_backward_compat=True)
+                    if warning:
+                        # Convert pattern back to string format
+                        units = {"m": 1, "h": 60, "d": 60 * 24, "w": 60 * 24 * 7, "y": 60 * 24 * 365}
+                        converted_str = ":".join([
+                            f"{int(p/525600)}y" if p >= 525600 and p % 525600 == 0 else
+                            f"{int(p/10080)}w" if p >= 10080 and p % 10080 == 0 and p < 525600 else
+                            f"{int(p/1440)}d" if p >= 1440 and p % 1440 == 0 and p < 10080 else
+                            f"{int(p/60)}h" if p >= 60 and p % 60 == 0 and p < 1440 else
+                            f"{p}m"
+                            for p in converted_pattern
+                        ])
+                        new_action = f"purge:{converted_str}"
+                        updates.append((name, action, new_action))
+                        needs_conversion = True
+                        print(f"Found deprecated pattern for volume '{name}': '{pattern}' -> '{converted_str}'")
+                except Exception:
+                    pass
+    
+    if not needs_conversion:
+        print("No deprecated patterns found in schedule.")
+        return True
+    
+    # Ask for confirmation
+    print(f"\nFound {len(updates)} deprecated pattern(s). Convert them? (y/N): ", end="")
+    response = input().strip().lower()
+    
+    if response not in ('y', 'yes'):
+        print("Conversion cancelled.")
+        return False
+    
+    # Create backup
+    backup_file = f"{config}.backup"
+    import shutil
+    shutil.copy2(config, backup_file)
+    print(f"Created backup: {backup_file}")
+    
+    # Read and update the file
+    lines = []
+    with open(config, 'r') as f:
+        for line in csv.DictReader(f, fieldnames=FIELDS):
+            name, action, timer, enabled = line.values()
+            
+            # Check if this line needs updating
+            for update_name, old_action, new_action in updates:
+                if name == update_name and action == old_action:
+                    action = new_action
+                    break
+            
+            lines.append([name, action, timer, enabled])
+    
+    # Write updated file
+    with open(config, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerows(lines)
+    
+    print(f"Successfully converted {len(updates)} pattern(s).")
+    print("Updated schedule file. The scheduler will use the new patterns on next run.")
+    return True
+
+
 def scheduled(args):
+    # Handle auto-convert option
+    if getattr(args, 'auto_convert_old_patterns', False):
+        return _auto_convert_old_patterns()
+    
     if args.action == "list":
         urlpath = "/VolumeDriver.Schedule.List"
         resp = Session().get(f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}")
         scheduled = get_from(resp, "Schedule")
         if scheduled:
             formatted_jobs = []
+            deprecated_patterns = []
+            
             for job in scheduled:
                 status = "(paused)" if job.get("Active") == "False" else ""
+                action = job['Action']
+                
+                # Check for deprecated purge patterns
+                if action.startswith("purge:"):
+                    _, pattern = action.split(":", 1)
+                    try:
+                        from buttervolume.plugin import validate_purge_pattern
+                        _, warning = validate_purge_pattern(pattern, allow_backward_compat=True)
+                        if warning:
+                            deprecated_patterns.append((job['Name'], action, pattern))
+                            status += " (deprecated pattern)"
+                    except Exception:
+                        pass
+                
                 formatted_jobs.append(f"{job['Action']} {job['Timer']} {job['Name']} {status}")
+            
             print("\n".join(formatted_jobs))
+            
+            # Show warning about deprecated patterns
+            if deprecated_patterns:
+                print("\nWARNING: Found deprecated purge patterns:")
+                for name, action, pattern in deprecated_patterns:
+                    print(f"  Volume '{name}': pattern '{pattern}' should be converted")
+                print("Run 'buttervolume scheduled --auto-convert-old-patterns' to convert them automatically.")
+                
         return scheduled
     elif args.action == "pause":
         resp = Session().post(
@@ -293,7 +402,29 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                         name,
                         pattern,
                     )
-                    purge(Arg(name=[name], pattern=[pattern], dryrun=False), test=test)
+                    
+                    # Check for deprecated patterns and warn, but continue execution
+                    try:
+                        from buttervolume.plugin import validate_purge_pattern
+                        converted_pattern, warning = validate_purge_pattern(pattern, allow_backward_compat=True)
+                        if warning:
+                            log.warning(warning)
+                            # Use the converted pattern
+                            actual_pattern = ":".join([
+                                f"{int(p/60)}h" if p >= 60 and p % 60 == 0 and p < 1440 else
+                                f"{int(p/1440)}d" if p >= 1440 and p % 1440 == 0 and p < 10080 else
+                                f"{int(p/10080)}w" if p >= 10080 and p % 10080 == 0 and p < 525600 else
+                                f"{int(p/525600)}y" if p >= 525600 and p % 525600 == 0 else
+                                f"{p}m"
+                                for p in converted_pattern
+                            ])
+                        else:
+                            actual_pattern = pattern
+                    except Exception as e:
+                        log.error(f"Invalid purge pattern '{pattern}': {e}")
+                        continue
+                    
+                    purge(Arg(name=[name], pattern=[actual_pattern], dryrun=False), test=test)
                     log.info("Finished purging")
                     schedule_log[action][name] = now
                 if action.startswith("synchronize:"):
@@ -588,6 +719,11 @@ def main():
         choices=("list", "pause", "resume"),
         default="list",
         help=("Name of the action on the scheduled list (list, pause, resume). Default: list"),
+    )
+    parser_scheduled.add_argument(
+        "--auto-convert-old-patterns",
+        action="store_true",
+        help="Automatically convert deprecated purge patterns in schedule.csv",
     )
 
     parser_restore = subparsers.add_parser("restore", help="Restore a snapshot")
