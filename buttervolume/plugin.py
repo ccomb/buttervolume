@@ -720,7 +720,12 @@ def snapshots_purge(req):
     validate_volume_name(volume_name)
 
     # Validate pattern with strict rules (no backward compatibility for immediate purge)
-    pattern, _ = validate_purge_pattern(req["Pattern"], allow_backward_compat=False)
+    warning = validate_purge_pattern(req["Pattern"], allow_backward_compat=False)
+    if warning:
+        raise ValidationError(f"Invalid pattern: {warning}")
+
+    # Parse pattern for compute_purges
+    pattern = parse_purge_pattern(req["Pattern"])
 
     # snapshots related to the volume, more recents first
     snapshots = [s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(volume_name + "@")]
@@ -741,20 +746,19 @@ def snapshots_purge(req):
 
 
 def validate_purge_pattern(pattern_str, allow_backward_compat=False):
-    """Validate and optionally convert purge patterns
+    """Validate purge patterns
 
     Args:
         pattern_str: Pattern string like "2h:1d" or "2h"
-        allow_backward_compat: If True, convert "2h:2h" to "2h" with warning
+        allow_backward_compat: If True, allow deprecated "2h:2h" patterns with warning
 
     Returns:
-        tuple: (converted_pattern_list, warning_message_or_none)
+        warning_message_or_none: Warning message for deprecated patterns, None otherwise
 
     Raises:
         ValidationError: If pattern is invalid
     """
     units = {"m": 1, "h": 60, "d": 60 * 24, "w": 60 * 24 * 7, "y": 60 * 24 * 365}
-    warning = None
 
     try:
         split = pattern_str.split(":")
@@ -763,17 +767,17 @@ def validate_purge_pattern(pattern_str, allow_backward_compat=False):
             "Pattern components must be numeric with unit suffix"
         )
 
-        # Backward compatibility: convert "2h:2h" pattern to "2h" with warning
-        if allow_backward_compat and len(split) == 2 and split[0] == split[1]:
-            warning = (
-                f"Converting deprecated pattern '{pattern_str}' to '{split[0]}'. "
-                f"Please update your schedule using 'buttervolume scheduled --auto-convert-old-patterns'."
-            )
-            split = split[:1]
-        elif not allow_backward_compat and len(split) == 2 and split[0] == split[1]:
-            raise ValidationError(
-                f"Invalid pattern '{pattern_str}'. Use '{split[0]}' instead of duplicate components."
-            )
+        # Check for deprecated duplicate patterns
+        if len(split) == 2 and split[0] == split[1]:
+            if allow_backward_compat:
+                return (
+                    f"Converting deprecated pattern '{pattern_str}' to '{split[0]}'. "
+                    f"Please update your schedule using 'buttervolume scheduled --auto-convert-old-patterns'."
+                )
+            else:
+                raise ValidationError(
+                    f"Invalid pattern '{pattern_str}'. Use '{split[0]}' instead of duplicate components."
+                )
 
         # Check ascending order for multi-component patterns - by time values, not just units
         if len(split) > 1:
@@ -782,10 +786,50 @@ def validate_purge_pattern(pattern_str, allow_backward_compat=False):
                 "Time values must be in ascending order (e.g., 2h:4h:8h or 30m:2h:1d)"
             )
 
-        pattern = sorted(int(i[:-1]) * units[i[-1]] for i in split)
-        return pattern, warning
+        return None  # Valid pattern, no warning
 
     except (ValueError, KeyError, AssertionError) as e:
+        raise ValidationError(f"Invalid purge pattern: {pattern_str} - {str(e)}") from None
+
+
+def convert_purge_pattern(pattern_str):
+    """Convert deprecated purge patterns to new format
+
+    Args:
+        pattern_str: Pattern string like "2h:2h"
+
+    Returns:
+        converted_pattern_str: Converted pattern like "2h"
+    """
+    split = pattern_str.split(":")
+
+    # Convert "2h:2h" to "2h"
+    if len(split) == 2 and split[0] == split[1]:
+        return split[0]
+
+    # Pattern doesn't need conversion
+    return pattern_str
+
+
+def parse_purge_pattern(pattern_str):
+    """Parse purge pattern string into minutes list for compute_purges
+
+    Args:
+        pattern_str: Pattern string like "2h:1d" or "2h"
+
+    Returns:
+        list: Pattern converted to minutes, sorted in descending order
+
+    Raises:
+        ValidationError: If pattern is invalid
+    """
+    units = {"m": 1, "h": 60, "d": 60 * 24, "w": 60 * 24 * 7, "y": 60 * 24 * 365}
+
+    try:
+        split = pattern_str.split(":")
+        pattern = sorted(int(i[:-1]) * units[i[-1]] for i in split)
+        return pattern
+    except (ValueError, KeyError) as e:
         raise ValidationError(f"Invalid purge pattern: {pattern_str} - {str(e)}") from None
 
 

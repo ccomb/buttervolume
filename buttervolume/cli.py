@@ -30,6 +30,7 @@ from buttervolume.plugin import (
     TIMER,
     USOCKET,
     VOLUMES_PATH,
+    convert_purge_pattern,
     validate_purge_pattern,
 )
 
@@ -130,30 +131,9 @@ def _auto_convert_old_patterns():
             if action.startswith("purge:"):
                 _, pattern = action.split(":", 1)
                 try:
-                    converted_pattern, warning = validate_purge_pattern(
-                        pattern, allow_backward_compat=True
-                    )
+                    warning = validate_purge_pattern(pattern, allow_backward_compat=True)
                     if warning:
-                        # Convert pattern back to string format
-                        units = {
-                            "m": 1,
-                            "h": 60,
-                            "d": 60 * 24,
-                            "w": 60 * 24 * 7,
-                            "y": 60 * 24 * 365,
-                        }
-                        converted_str = ":".join([
-                            f"{int(p / 525600)}y"
-                            if p >= 525600 and p % 525600 == 0
-                            else f"{int(p / 10080)}w"
-                            if p >= 10080 and p % 10080 == 0 and p < 525600
-                            else f"{int(p / 1440)}d"
-                            if p >= 1440 and p % 1440 == 0 and p < 10080
-                            else f"{int(p / 60)}h"
-                            if p >= 60 and p % 60 == 0 and p < 1440
-                            else f"{p}m"
-                            for p in converted_pattern
-                        ])
+                        converted_str = convert_purge_pattern(pattern)
                         new_action = f"purge:{converted_str}"
                         updates.append((name, action, new_action))
                         needs_conversion = True
@@ -226,7 +206,7 @@ def scheduled(args):
                 if action.startswith("purge:"):
                     _, pattern = action.split(":", 1)
                     try:
-                        _, warning = validate_purge_pattern(pattern, allow_backward_compat=True)
+                        warning = validate_purge_pattern(pattern, allow_backward_compat=True)
                         if warning:
                             deprecated_patterns.append((job["Name"], action, pattern))
                             status += " (deprecated pattern)"
@@ -240,7 +220,7 @@ def scheduled(args):
             # Show warning about deprecated patterns
             if deprecated_patterns:
                 print("\nWARNING: Found deprecated purge patterns:")
-                for name, action, pattern in deprecated_patterns:
+                for name, _, pattern in deprecated_patterns:
                     print(f"  Volume '{name}': pattern '{pattern}' should be converted")
                 print(
                     "Run 'buttervolume scheduled --auto-convert-old-patterns' to convert them automatically."
@@ -421,24 +401,11 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
 
                     # Check for deprecated patterns and warn, but continue execution
                     try:
-                        converted_pattern, warning = validate_purge_pattern(
-                            pattern, allow_backward_compat=True
-                        )
+                        warning = validate_purge_pattern(pattern, allow_backward_compat=True)
                         if warning:
                             log.warning(warning)
                             # Use the converted pattern
-                            actual_pattern = ":".join([
-                                f"{int(p / 60)}h"
-                                if p >= 60 and p % 60 == 0 and p < 1440
-                                else f"{int(p / 1440)}d"
-                                if p >= 1440 and p % 1440 == 0 and p < 10080
-                                else f"{int(p / 10080)}w"
-                                if p >= 10080 and p % 10080 == 0 and p < 525600
-                                else f"{int(p / 525600)}y"
-                                if p >= 525600 and p % 525600 == 0
-                                else f"{p}m"
-                                for p in converted_pattern
-                            ])
+                            actual_pattern = convert_purge_pattern(pattern)
                         else:
                             actual_pattern = pattern
                     except Exception as e:

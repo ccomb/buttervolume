@@ -1,3 +1,4 @@
+import contextlib
 import os
 from subprocess import PIPE, CalledProcessError, TimeoutExpired
 from subprocess import run as _run
@@ -148,11 +149,9 @@ class Subvolume:
         """Create a new BTRFS subvolume"""
         out = self._create_subvolume()
         if not cow:
-            try:
+            with contextlib.suppress(BtrfsError):
                 run_safe(["chattr", "+C", self.path], timeout=10)
-            except BtrfsError:
                 # chattr failure is not critical, subvolume was created successfully
-                pass
         return out
 
     @btrfs_operation(BtrfsSubvolumeError, "Failed to delete subvolume", timeout=300)

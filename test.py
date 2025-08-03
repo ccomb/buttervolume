@@ -740,7 +740,7 @@ class TestCase(unittest.TestCase):
 
         # Check that purge still worked (converted 2h:2h to 2h)
         self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps - 17)
-        
+
         # unschedule the deprecated pattern
         self.app.post(
             "/VolumeDriver.Schedule",
