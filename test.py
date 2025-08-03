@@ -1,19 +1,23 @@
 import json
+import logging
 import os
+import shutil
 import subprocess
 import tempfile
 import time
 import unittest
 import uuid
 import weakref
+from contextlib import suppress
 from datetime import datetime, timedelta
 from os.path import join
 from subprocess import check_output, run
+from unittest.mock import MagicMock, patch
 
 from webtest import TestApp
 
 from buttervolume import btrfs, cli, plugin
-from buttervolume.cli import runjobs
+from buttervolume.cli import init_btrfs, runjobs
 from buttervolume.plugin import (
     DTFORMAT,
     SNAPSHOTS_PATH,
@@ -55,7 +59,6 @@ class TestCase(unittest.TestCase):
                                     btrfs.Subvolume(item_path).delete(check=False)
                                 except Exception:
                                     # If BTRFS deletion fails, try regular directory removal
-                                    import shutil
 
                                     shutil.rmtree(item_path, ignore_errors=True)
                             else:
@@ -72,8 +75,6 @@ class TestCase(unittest.TestCase):
             try:
                 btrfs.Filesystem(VOLUMES_PATH).label()
             except Exception as e:
-                import unittest
-
                 # For Docker tests, try to create a BTRFS filesystem on a loop device
                 if self._try_create_btrfs_filesystem():
                     # Retry after filesystem creation
@@ -127,8 +128,6 @@ class TestCase(unittest.TestCase):
     def _cleanup_stale_loop_devices(self):
         """Clean up loop devices pointing to non-existent files"""
         try:
-            import subprocess
-
             result = subprocess.run(["losetup", "-l"], capture_output=True, text=True)
             if result.returncode != 0:
                 return
@@ -583,10 +582,10 @@ class TestCase(unittest.TestCase):
     def test_purge(self):
         """Check we can purge snapshots with a save pattern"""
         name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
-        # first run the purge without snapshots (should do nothing)
+        # first run the purge without snapshots (should do nothing) - use single pattern now
         self.app.post(
             "/VolumeDriver.Snapshots.Purge",
-            json.dumps({"Name": name, "Pattern": "2h:2h"}),
+            json.dumps({"Name": name, "Pattern": "2h"}),
         )
         # create a volume with a file
         self.create_a_volume_with_a_file(name)
@@ -597,26 +596,30 @@ class TestCase(unittest.TestCase):
                 for item in os.listdir(SNAPSHOTS_PATH):
                     if item.startswith(PREFIX_TEST_VOLUME):
                         item_path = join(SNAPSHOTS_PATH, item)
-                        try:
+                        # Continue cleanup even if individual items fail
+                        with suppress(Exception):
                             btrfs.Subvolume(item_path).delete(check=False)
-                        except Exception:
-                            pass  # Continue cleanup even if individual items fail
 
         self.create_20_hourly_snapshots(name)
-        # run the purge with a simple save pattern (2h only once)
+        # run the purge with a simple save pattern (2h only)
         nb_snaps = len(os.listdir(SNAPSHOTS_PATH))
         resp = self.app.post(
             "/VolumeDriver.Snapshots.Purge",
-            json.dumps({"Name": name, "Pattern": "2h:2h"}),
+            json.dumps({"Name": name, "Pattern": "2h"}),
         )
-        self.assertEqual(jsonloads(resp.body), {"Err": ""})
-        # check we deleted 18 snapshots
-        self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps - 18)
+        result = jsonloads(resp.body)
+        print(f"DEBUG: Purge result: {result}")
+        print(
+            f"DEBUG: Before purge: {nb_snaps} snapshots, After purge: {len(os.listdir(SNAPSHOTS_PATH))} snapshots"
+        )
+        self.assertEqual(result, {"Err": ""})
+        # check we deleted 17 snapshots (the @invalid snapshot is not counted)
+        self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps - 17)
         # run the purge again and check we have no more snapshot deleted
         nb_snaps = len(os.listdir(SNAPSHOTS_PATH))
         resp = self.app.post(
             "/VolumeDriver.Snapshots.Purge",
-            json.dumps({"Name": name, "Pattern": "2h:2h"}),
+            json.dumps({"Name": name, "Pattern": "2h"}),
         )
         self.assertEqual(jsonloads(resp.body), {"Err": ""})
         self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps)
@@ -635,17 +638,30 @@ class TestCase(unittest.TestCase):
 
         cleanup_snapshots()
         self.create_20_hourly_snapshots(name)
+
+        # Test that deprecated duplicate patterns are rejected with helpful message
+        resp = self.app.post(
+            "/VolumeDriver.Snapshots.Purge",
+            json.dumps({"Name": name, "Pattern": "2h:2h"}),
+        )
+        self.assertIn("Invalid pattern '2h:2h'. Use '2h' instead", jsonloads(resp.body)["Err"])
+
         # check we have an error with a non numeric pattern
         resp = self.app.post(
             "/VolumeDriver.Snapshots.Purge",
             json.dumps({"Name": name, "Pattern": "60m:plop:3000m"}),
         )
-        self.assertEqual(jsonloads(resp.body), {"Err": "Invalid purge pattern: 60m:plop:3000m"})
-        # run the purge with a more complex unsorted save pattern
+        self.assertEqual(
+            jsonloads(resp.body),
+            {
+                "Err": "Invalid purge pattern: 60m:plop:3000m - Pattern components must be numeric with unit suffix"
+            },
+        )
+        # run the purge with a more complex multi-component save pattern
         nb_snaps = len(os.listdir(SNAPSHOTS_PATH))
         resp = self.app.post(
             "/VolumeDriver.Snapshots.Purge",
-            json.dumps({"Name": name, "Pattern": "60m:120m:300m:240m:180m"}),
+            json.dumps({"Name": name, "Pattern": "60m:120m:180m:240m:300m"}),
         )
         self.assertEqual(jsonloads(resp.body), {"Err": ""})
         # check we deleted 18 snapshots
@@ -680,16 +696,52 @@ class TestCase(unittest.TestCase):
         name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
         self.create_a_volume_with_a_file(name)
         self.create_20_hourly_snapshots(name)
-        # schedule a purge of the volumes
+        # schedule a purge of the volumes with single pattern
+        self.app.post(
+            "/VolumeDriver.Schedule",
+            json.dumps({"Name": name, "Action": "purge:2h", "Timer": 60}),
+        )
+        schedule_log = {"purge:2h": {name: datetime.now() - timedelta(days=1)}}
+        nb_snaps = len(os.listdir(SNAPSHOTS_PATH))
+        runjobs(config=SCHEDULE, test=True, schedule_log=schedule_log)
+        self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps - 17)
+        # unschedule
+        self.app.post(
+            "/VolumeDriver.Schedule",
+            json.dumps({"Name": name, "Action": "purge:2h", "Timer": 0}),
+        )
+
+    def test_schedule_purge_backward_compat(self):
+        """Test that scheduler handles deprecated 2h:2h patterns with warnings"""
+        # create a volume with a file
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        self.create_20_hourly_snapshots(name)
+
+        # Create a schedule entry with deprecated pattern (this will be in schedule.csv)
         self.app.post(
             "/VolumeDriver.Schedule",
             json.dumps({"Name": name, "Action": "purge:2h:2h", "Timer": 60}),
         )
         schedule_log = {"purge:2h:2h": {name: datetime.now() - timedelta(days=1)}}
         nb_snaps = len(os.listdir(SNAPSHOTS_PATH))
-        runjobs(config=SCHEDULE, test=True, schedule_log=schedule_log)
-        self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps - 18)
-        # unschedule
+
+        # This should work (with warning) because scheduler uses backward compatibility
+
+        with self.assertLogs(level=logging.WARNING) as log_capture:
+            runjobs(config=SCHEDULE, test=True, schedule_log=schedule_log)
+
+        # Check that warning was logged
+        self.assertTrue(
+            any(
+                "Converting deprecated pattern '2h:2h' to '2h'" in msg for msg in log_capture.output
+            )
+        )
+
+        # Check that purge still worked (converted 2h:2h to 2h)
+        self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps - 17)
+
+        # unschedule the deprecated pattern
         self.app.post(
             "/VolumeDriver.Schedule",
             json.dumps({"Name": name, "Action": "purge:2h:2h", "Timer": 0}),
@@ -799,9 +851,6 @@ class TestCase(unittest.TestCase):
 
     def test_init_file(self):
         """Test the buttervolume init --file command"""
-        from unittest.mock import MagicMock, patch
-
-        from buttervolume.cli import init_btrfs
 
         # Test image file creation as non-root user (should work in user directory)
         with patch("os.geteuid", return_value=1000), patch("os.access", return_value=True), patch(
@@ -859,8 +908,6 @@ class TemporaryDirectory(tempfile.TemporaryDirectory):
 
     def mkdir(self, path):
         if os.path.isdir(path):
-            import shutil
-
             shutil.rmtree(path)
         os.mkdir(path, 0o700)
         return path

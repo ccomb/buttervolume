@@ -132,13 +132,13 @@ Then check the logs with::
 
 You can also locally install and run the plugin in the foreground with::
 
-    python3 -m venv venv
-    ./venv/bin/python setup.py develop
-    sudo ./venv/bin/buttervolume run
+    uv venv
+    uv sync --extra dev
+    sudo .venv/bin/buttervolume run
 
 Then you can use the buttervolume CLI that was installed in developer mode in the venv::
 
-    ./venv/bin/buttervolume --version
+    .venv/bin/buttervolume --version
 
 
 Install and run as a user
