@@ -665,7 +665,7 @@ class TestCase(unittest.TestCase):
         )
         self.assertEqual(jsonloads(resp.body), {"Err": ""})
         # check we deleted 18 snapshots
-        self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps - 17)
+        self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps - 18)
         cleanup_snapshots()
         self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name}))
 
@@ -718,7 +718,11 @@ class TestCase(unittest.TestCase):
         self.create_a_volume_with_a_file(name)
         self.create_20_hourly_snapshots(name)
 
-        # Simulate old schedule with deprecated pattern - this would be in schedule.csv
+        # Create a schedule entry with deprecated pattern (this will be in schedule.csv)
+        self.app.post(
+            "/VolumeDriver.Schedule",
+            json.dumps({"Name": name, "Action": "purge:2h:2h", "Timer": 60}),
+        )
         schedule_log = {"purge:2h:2h": {name: datetime.now() - timedelta(days=1)}}
         nb_snaps = len(os.listdir(SNAPSHOTS_PATH))
 
@@ -736,6 +740,12 @@ class TestCase(unittest.TestCase):
 
         # Check that purge still worked (converted 2h:2h to 2h)
         self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps - 17)
+        
+        # unschedule the deprecated pattern
+        self.app.post(
+            "/VolumeDriver.Schedule",
+            json.dumps({"Name": name, "Action": "purge:2h:2h", "Timer": 0}),
+        )
 
     @unittest.skipIf(
         os.environ.get("BUTTERVOLUME_LOCAL_TEST"), "SSH not available in local test mode"
