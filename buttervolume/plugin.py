@@ -347,7 +347,12 @@ def snapshot_list(_):
 def snapshot_sublist(_, name=""):
     snapshots = os.listdir(SNAPSHOTS_PATH)
     if name:
-        snapshots = [s for s in snapshots if s.startswith(name + "@")]
+        legacy_name = name.replace(DRIVERNAME, LEGACY_DRIVERNAME, 1)
+        snapshots = [
+            s
+            for s in snapshots
+            if s.startswith(name + "@") or s.startswith(legacy_name + "@")
+        ]
     return {"Err": "", "Snapshots": snapshots}
 
 
