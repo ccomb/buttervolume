@@ -1,7 +1,7 @@
 CHANGELOG
 =========
 
-3.13 (unreleased)
+3.13 (2025-08-03)
 *****************
 
 - Fixed the tests: create a BTRFS filesystems in a loop device if there is no BTRFS during tests.
