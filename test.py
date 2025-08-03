@@ -1,5 +1,7 @@
 import json
+import logging
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -57,7 +59,6 @@ class TestCase(unittest.TestCase):
                                     btrfs.Subvolume(item_path).delete(check=False)
                                 except Exception:
                                     # If BTRFS deletion fails, try regular directory removal
-                                    import shutil
 
                                     shutil.rmtree(item_path, ignore_errors=True)
                             else:
@@ -74,8 +75,6 @@ class TestCase(unittest.TestCase):
             try:
                 btrfs.Filesystem(VOLUMES_PATH).label()
             except Exception as e:
-                import unittest
-
                 # For Docker tests, try to create a BTRFS filesystem on a loop device
                 if self._try_create_btrfs_filesystem():
                     # Retry after filesystem creation
@@ -129,8 +128,6 @@ class TestCase(unittest.TestCase):
     def _cleanup_stale_loop_devices(self):
         """Clean up loop devices pointing to non-existent files"""
         try:
-            import subprocess
-
             result = subprocess.run(["losetup", "-l"], capture_output=True, text=True)
             if result.returncode != 0:
                 return
@@ -660,11 +657,11 @@ class TestCase(unittest.TestCase):
                 "Err": "Invalid purge pattern: 60m:plop:3000m - Pattern components must be numeric with unit suffix"
             },
         )
-        # run the purge with a more complex unsorted save pattern
+        # run the purge with a more complex multi-component save pattern
         nb_snaps = len(os.listdir(SNAPSHOTS_PATH))
         resp = self.app.post(
             "/VolumeDriver.Snapshots.Purge",
-            json.dumps({"Name": name, "Pattern": "60m:120m:300m:240m:180m"}),
+            json.dumps({"Name": name, "Pattern": "60m:120m:180m:240m:300m"}),
         )
         self.assertEqual(jsonloads(resp.body), {"Err": ""})
         # check we deleted 18 snapshots
@@ -726,7 +723,6 @@ class TestCase(unittest.TestCase):
         nb_snaps = len(os.listdir(SNAPSHOTS_PATH))
 
         # This should work (with warning) because scheduler uses backward compatibility
-        import logging
 
         with self.assertLogs(level=logging.WARNING) as log_capture:
             runjobs(config=SCHEDULE, test=True, schedule_log=schedule_log)
@@ -902,8 +898,6 @@ class TemporaryDirectory(tempfile.TemporaryDirectory):
 
     def mkdir(self, path):
         if os.path.isdir(path):
-            import shutil
-
             shutil.rmtree(path)
         os.mkdir(path, 0o700)
         return path

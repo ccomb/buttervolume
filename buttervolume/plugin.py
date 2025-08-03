@@ -769,7 +769,7 @@ def validate_purge_pattern(pattern_str, allow_backward_compat=False):
                 f"Converting deprecated pattern '{pattern_str}' to '{split[0]}'. "
                 f"Please update your schedule using 'buttervolume scheduled --auto-convert-old-patterns'."
             )
-            split = [split[0]]
+            split = split[:1]
         elif not allow_backward_compat and len(split) == 2 and split[0] == split[1]:
             raise ValidationError(
                 f"Invalid pattern '{pattern_str}'. Use '{split[0]}' instead of duplicate components."
