@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 from webtest import TestApp
 
 from buttervolume import btrfs, cli, plugin
-from buttervolume.cli import runjobs
+from buttervolume.cli import init_btrfs, runjobs
 from buttervolume.plugin import (
     DTFORMAT,
     SNAPSHOTS_PATH,
@@ -612,7 +612,9 @@ class TestCase(unittest.TestCase):
         )
         result = jsonloads(resp.body)
         print(f"DEBUG: Purge result: {result}")
-        print(f"DEBUG: Before purge: {nb_snaps} snapshots, After purge: {len(os.listdir(SNAPSHOTS_PATH))} snapshots")
+        print(
+            f"DEBUG: Before purge: {nb_snaps} snapshots, After purge: {len(os.listdir(SNAPSHOTS_PATH))} snapshots"
+        )
         self.assertEqual(result, {"Err": ""})
         # check we deleted 17 snapshots (the @invalid snapshot is not counted)
         self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps - 17)
@@ -639,20 +641,25 @@ class TestCase(unittest.TestCase):
 
         cleanup_snapshots()
         self.create_20_hourly_snapshots(name)
-        
+
         # Test that deprecated duplicate patterns are rejected with helpful message
         resp = self.app.post(
             "/VolumeDriver.Snapshots.Purge",
             json.dumps({"Name": name, "Pattern": "2h:2h"}),
         )
         self.assertIn("Invalid pattern '2h:2h'. Use '2h' instead", jsonloads(resp.body)["Err"])
-        
+
         # check we have an error with a non numeric pattern
         resp = self.app.post(
             "/VolumeDriver.Snapshots.Purge",
             json.dumps({"Name": name, "Pattern": "60m:plop:3000m"}),
         )
-        self.assertEqual(jsonloads(resp.body), {"Err": "Invalid purge pattern: 60m:plop:3000m - Pattern components must be numeric with unit suffix"})
+        self.assertEqual(
+            jsonloads(resp.body),
+            {
+                "Err": "Invalid purge pattern: 60m:plop:3000m - Pattern components must be numeric with unit suffix"
+            },
+        )
         # run the purge with a more complex unsorted save pattern
         nb_snaps = len(os.listdir(SNAPSHOTS_PATH))
         resp = self.app.post(
@@ -713,19 +720,24 @@ class TestCase(unittest.TestCase):
         name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
         self.create_a_volume_with_a_file(name)
         self.create_20_hourly_snapshots(name)
-        
+
         # Simulate old schedule with deprecated pattern - this would be in schedule.csv
         schedule_log = {"purge:2h:2h": {name: datetime.now() - timedelta(days=1)}}
         nb_snaps = len(os.listdir(SNAPSHOTS_PATH))
-        
+
         # This should work (with warning) because scheduler uses backward compatibility
         import logging
+
         with self.assertLogs(level=logging.WARNING) as log_capture:
             runjobs(config=SCHEDULE, test=True, schedule_log=schedule_log)
-        
+
         # Check that warning was logged
-        self.assertTrue(any("Converting deprecated pattern '2h:2h' to '2h'" in msg for msg in log_capture.output))
-        
+        self.assertTrue(
+            any(
+                "Converting deprecated pattern '2h:2h' to '2h'" in msg for msg in log_capture.output
+            )
+        )
+
         # Check that purge still worked (converted 2h:2h to 2h)
         self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps - 17)
 
@@ -833,9 +845,6 @@ class TestCase(unittest.TestCase):
 
     def test_init_file(self):
         """Test the buttervolume init --file command"""
-        from unittest.mock import MagicMock, patch
-
-        from buttervolume.cli import init_btrfs
 
         # Test image file creation as non-root user (should work in user directory)
         with patch("os.geteuid", return_value=1000), patch("os.access", return_value=True), patch(

@@ -1,5 +1,4 @@
 import os
-from contextlib import suppress
 from subprocess import PIPE, CalledProcessError, TimeoutExpired
 from subprocess import run as _run
 
