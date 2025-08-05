@@ -40,6 +40,9 @@ log = logging.getLogger()
 app = app()
 
 
+ReplicationInProgress = set()
+
+
 class Session:
     """wrapper for requests_unixsocket.Session"""
 
@@ -381,16 +384,31 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                     log.info("Successfully snapshotted to %s", snap)
                     schedule_log[action][name] = now
                 if action.startswith("replicate:"):
+                    if name in ReplicationInProgress:
+                        log.warning(
+                            f"Replication of {name} already in progress, skipping."
+                        )
+                        continue
                     _, host = action.split(":")
                     log.info("Starting scheduled replication of %s", name)
-                    snap = snapshot(Arg(name=[name]), test=test)
-                    if not snap:
-                        log.info("Could not snapshot %s", name)
-                        continue
-                    log.info("Successfully snapshotted to %s", snap)
-                    send(Arg(snapshot=[snap], host=[host]), test=test)
-                    log.info("Successfully replicated %s to %s", name, snap)
-                    schedule_log[action][name] = now
+                    try:
+                        ReplicationInProgress.add(name)
+                        snap = snapshot(Arg(name=[name]), test=test)
+                        if not snap:
+                            log.info("Could not snapshot %s", name)
+                            continue
+                        log.info("Successfully snapshotted to %s", snap)
+                        send(Arg(snapshot=[snap], host=[host]), test=test)
+                        log.info("Successfully replicated %s to %s", name, snap)
+                        schedule_log[action][name] = now
+                    except Exception as e:
+                        log.warning("Replication failed: %s", e)
+                        # remove snapshot that was created for the failed replication
+                        if snap:
+                            remove(Arg(name=[snap]), test=test)
+                            log.info("Removed snapshot %s for failed replication", snap)
+                    finally:
+                        ReplicationInProgress.remove(name)
                 if action.startswith("purge:"):
                     _, pattern = action.split(":", 1)
                     log.info(
@@ -451,13 +469,14 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
 def scheduler(event, config=SCHEDULE, test=False, timer=TIMER):
     """Read the scheduler config and apply it, then run scheduler again."""
     log.info(f"Starting the scheduler thread. Next jobs will run in {timer} seconds")
+    schedule_log = {"snapshot": {}, "replicate": {}, "synchronize": {}}
     while not test and not event.is_set():
         if event.wait(timeout=float(timer)):
             log.info("Terminating the scheduler thread")
             return
         else:
             try:
-                runjobs(config, test, timer=timer)
+                runjobs(config, test, schedule_log=schedule_log, timer=timer)
             except Exception:
                 log.critical("An exception occured in the scheduling job")
                 log.critical(traceback.format_exc())
