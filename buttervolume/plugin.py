@@ -179,6 +179,8 @@ def safe_handler(func):
             return {"Err": str(e)}
         except Exception as e:
             log.error("Unexpected error in %s: %s", func.__name__, str(e))
+            if hasattr(e, "stderr") and e.stderr:
+                return {"Err": e.stderr.decode()}
             return {"Err": f"Unexpected error: {str(e)}"}
 
     return wrapper
@@ -412,7 +414,9 @@ def volume_sync(req):
                 # 10 min timeout for rsync
                 btrfs.run_safe(cmd, check=True, stdout=PIPE, stderr=PIPE, timeout=600)
             except Exception as ex:
-                err = getattr(ex, "stderr", ex)
+                err = getattr(ex, "stderr", str(ex))
+                if isinstance(err, bytes):
+                    err = err.decode()
                 error_message = f"Error while rsync {volume_name} from {remote_host}: {err}"
                 log.error(error_message)
                 errors.append(error_message)
