@@ -8,6 +8,7 @@ import time
 import unittest
 import uuid
 import weakref
+import threading
 from contextlib import suppress
 from datetime import datetime, timedelta
 from os.path import join
@@ -68,6 +69,8 @@ class TestCase(unittest.TestCase):
                         pass  # Continue with cleanup even if individual items fail
 
     def setUp(self):
+        with open(SCHEDULE, "w") as f:
+            f.truncate()
         self.app = TestApp(cli.app)
         # Check that the target dir is BTRFS - skip tests if not
         # Set BUTTERVOLUME_SKIP_BTRFS_CHECK=1 to skip this check for testing
@@ -143,8 +146,39 @@ class TestCase(unittest.TestCase):
         except Exception:
             pass  # Don't fail the test if cleanup fails
 
-    def tearDown(self):
-        self.cleanup()
+    def test_replication_lock(self):
+        """Check that the replication lock prevents concurrent replications"""
+        # create a volume with a file
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        # schedule a replication
+        self.app.post(
+            "/VolumeDriver.Schedule",
+            json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 1}),
+        )
+        # simulate a long-running replication
+        with patch("buttervolume.cli.send") as mock_send:
+            mock_send.side_effect = lambda *args, **kwargs: time.sleep(2)
+            # run the scheduler in a separate thread
+            t = threading.Thread(target=runjobs, args=(SCHEDULE, True))
+            t.start()
+            # wait for the replication to start
+            time.sleep(1)
+            # check that the replication is in progress
+            self.assertIn(name, cli.ReplicationInProgress)
+            # run the scheduler again
+            runjobs(SCHEDULE, True)
+            # check that the second replication was skipped
+            mock_send.assert_called_once()
+            # wait for the replication to finish
+            t.join()
+            # check that the lock is released
+            self.assertNotIn(name, cli.ReplicationInProgress)
+        # unschedule
+        self.app.post(
+            "/VolumeDriver.Schedule",
+            json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 0}),
+        )
 
     def create_a_volume_with_a_file(self, name):
         # create a volume with a file
