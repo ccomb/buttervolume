@@ -15,11 +15,12 @@ from os.path import exists
 from subprocess import CalledProcessError
 
 import requests_unixsocket
-from bottle import app
+from bottle import Bottle
 from requests.exceptions import ConnectionError
 from waitress import serve
 from webtest import TestApp
 
+from buttervolume.api import cluster_api_app
 from buttervolume.plugin import (
     FIELDS,
     LOGLEVEL,
@@ -31,13 +32,15 @@ from buttervolume.plugin import (
     USOCKET,
     VOLUMES_PATH,
     convert_purge_pattern,
+    setup_routes,
     validate_purge_pattern,
 )
 
 VERSION = "3.13.0"
 logging.basicConfig(level=LOGLEVEL)
 log = logging.getLogger()
-app = app()
+docker_plugin_app = Bottle()
+setup_routes(docker_plugin_app)
 
 
 ReplicationInProgress = set()
@@ -100,7 +103,7 @@ def snapshot(args, test=False):
     urlpath = "/VolumeDriver.Snapshot"
     param = json.dumps({"Name": args.name[0]})
     if test:
-        resp = TestApp(app).post(urlpath, param)
+        resp = TestApp(docker_plugin_app).post(urlpath, param)
     else:
         resp = Session().post(f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}", param)
     res = get_from(resp, "Snapshot")
@@ -279,7 +282,7 @@ def send(args, test=False):
     param = {"Name": args.snapshot[0], "Host": args.host[0]}
     if test:
         param["Test"] = True
-        resp = TestApp(app).post(urlpath, json.dumps(param))
+        resp = TestApp(docker_plugin_app).post(urlpath, json.dumps(param))
     else:
         resp = Session().post(
             f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}",
@@ -296,7 +299,7 @@ def sync(args, test=False):
     param = {"Volumes": args.volumes, "Hosts": args.hosts}
     if test:
         param["Test"] = True
-        resp = TestApp(app).post(urlpath, json.dumps(param))
+        resp = TestApp(docker_plugin_app).post(urlpath, json.dumps(param))
     else:
         resp = Session().post(
             f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}",
@@ -323,7 +326,7 @@ def purge(args, test=False):
     param = {"Name": args.name[0], "Pattern": args.pattern[0], "Dryrun": args.dryrun}
     if test:
         param["Test"] = True
-        resp = TestApp(app).post(urlpath, json.dumps(param))
+        resp = TestApp(docker_plugin_app).post(urlpath, json.dumps(param))
     else:
         resp = Session().post(
             f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}",
@@ -385,9 +388,7 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                     schedule_log[action][name] = now
                 if action.startswith("replicate:"):
                     if name in ReplicationInProgress:
-                        log.warning(
-                            f"Replication of {name} already in progress, skipping."
-                        )
+                        log.warning(f"Replication of {name} already in progress, skipping.")
                         continue
                     _, host = action.split(":")
                     log.info("Starting scheduled replication of %s", name)
@@ -482,10 +483,24 @@ def scheduler(event, config=SCHEDULE, test=False, timer=TIMER):
                 log.critical(traceback.format_exc())
 
 
-def shutdown(thread, event):
+def run_docker_server(app):
+    """Serves the Docker plugin on the Unix socket."""
+    log.info(f"Listening to Docker requests on {SOCKET}...")
+    serve(app, unix_socket=SOCKET, unix_socket_perms="660")
+
+
+def run_cluster_server(app):
+    """Serves the cluster API on a TCP socket."""
+    # TODO: Make host and port configurable
+    host = "0.0.0.0"
+    port = 8723
+    log.info(f"Listening for cluster API requests on {host}:{port}...")
+    serve(app, host=host, port=port)
+
+
+def shutdown(event):
     log.info("Shutting down buttervolume...")
-    event.set()
-    thread.join()
+    event.set()  # Signal all threads to exit
 
     # Clean up the socket file to prevent Docker from hanging
     if exists(SOCKET):
@@ -494,8 +509,70 @@ def shutdown(thread, event):
             log.info("Cleaned up socket: %s", SOCKET)
         except OSError as e:
             log.warning("Could not remove socket %s: %s", SOCKET, e)
+    log.info("Buttervolume shut down.")
 
-    sys.exit(0)  # Use exit code 0 for clean shutdown
+
+def run(_, test=False):
+    if not exists(VOLUMES_PATH):
+        log.info("Creating %s", VOLUMES_PATH)
+        os.makedirs(VOLUMES_PATH, exist_ok=True)
+    if not exists(SNAPSHOTS_PATH):
+        log.info("Creating %s", SNAPSHOTS_PATH)
+        os.makedirs(SNAPSHOTS_PATH, exist_ok=True)
+
+    # Clean up any stale socket from previous unclean shutdown
+    if exists(SOCKET):
+        try:
+            os.unlink(SOCKET)
+            log.info("Removed stale socket: %s", SOCKET)
+        except OSError as e:
+            log.warning("Could not remove stale socket %s: %s", SOCKET, e)
+
+    event = threading.Event()
+    threads = []
+
+    # Start the scheduler thread (non-daemon)
+    log.info(f"Starting scheduler job every {TIMER}s")
+    scheduler_thread = threading.Thread(
+        name="Scheduler",
+        target=scheduler,
+        args=(event,),
+        kwargs={"config": SCHEDULE, "test": test, "timer": TIMER},
+    )
+    threads.append(scheduler_thread)
+
+    # Start the server threads (daemonic)
+    docker_thread = threading.Thread(
+        name="DockerPluginServer",
+        target=run_docker_server,
+        args=(docker_plugin_app,),
+    )
+    docker_thread.daemon = True
+    threads.append(docker_thread)
+
+    cluster_thread = threading.Thread(
+        name="ClusterApiServer",
+        target=run_cluster_server,
+        args=(cluster_api_app,),
+    )
+    cluster_thread.daemon = True
+    threads.append(cluster_thread)
+
+    for t in threads:
+        t.start()
+
+    def signal_handler(signum, frame):
+        log.warning(f"Received signal {signum}, shutting down.")
+        shutdown(event)
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    log.info("Buttervolume is running. Press Ctrl+C to exit.")
+    # The main thread will wait here until the scheduler thread finishes.
+    # The scheduler is the only non-daemonic thread, and it will finish
+    # when the shutdown event is set.
+    scheduler_thread.join()
 
 
 def init_btrfs(args):
@@ -623,41 +700,6 @@ def init_btrfs(args):
         print("You can now start the plugin with: buttervolume run")
 
     return True
-
-
-def run(_, test=False):
-    if not exists(VOLUMES_PATH):
-        log.info("Creating %s", VOLUMES_PATH)
-        os.makedirs(VOLUMES_PATH, exist_ok=True)
-    if not exists(SNAPSHOTS_PATH):
-        log.info("Creating %s", SNAPSHOTS_PATH)
-        os.makedirs(SNAPSHOTS_PATH, exist_ok=True)
-
-    # Clean up any stale socket from previous unclean shutdown
-    if exists(SOCKET):
-        try:
-            os.unlink(SOCKET)
-            log.info("Removed stale socket: %s", SOCKET)
-        except OSError as e:
-            log.warning("Could not remove stale socket %s: %s", SOCKET, e)
-
-    # run a thread for the scheduled jobs
-    print(f"Starting scheduler job every {TIMER}s")
-    event = threading.Event()
-    thread = threading.Thread(
-        target=scheduler,
-        args=(event,),
-        kwargs={"config": SCHEDULE, "test": test, "timer": TIMER},
-    )
-    thread.start()
-    signal.signal(signal.SIGINT, lambda *_: shutdown(thread, event))
-    signal.signal(signal.SIGTERM, lambda *_: shutdown(thread, event))
-    signal.signal(signal.SIGHUP, lambda *_: shutdown(thread, event))
-    signal.signal(signal.SIGQUIT, lambda *_: shutdown(thread, event))
-    signal.signal(signal.SIGURG, lambda *_: shutdown(thread, event))
-    # listen to requests
-    print(f"Listening to requests on {SOCKET}...")
-    serve(app, unix_socket=SOCKET, unix_socket_perms="660")
 
 
 def main():

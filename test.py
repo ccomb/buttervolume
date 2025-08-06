@@ -4,11 +4,11 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 import uuid
 import weakref
-import threading
 from contextlib import suppress
 from datetime import datetime, timedelta
 from os.path import join
@@ -37,41 +37,35 @@ def jsonloads(stuff):
 
 
 class TestCase(unittest.TestCase):
-    def cleanup(self):
-        """clean-up test volumes and snapshots before each test"""
-        for directory in (VOLUMES_PATH, SNAPSHOTS_PATH, TEST_REMOTE_PATH):
-            if os.path.exists(directory):
-                # Get all test items and delete them explicitly
-                items_to_delete = []
-                try:
-                    for item in os.listdir(directory):
-                        if item.startswith(PREFIX_TEST_VOLUME):
-                            items_to_delete.append(join(directory, item))
-                except FileNotFoundError:
-                    continue
+    def tearDown(self):
+        """clean-up test volumes and snapshots after each test"""
+        # Clean up snapshots
+        resp = self.app.get("/VolumeDriver.Snapshot.List")
+        snapshots = jsonloads(resp.body)["Snapshots"]
+        for snapshot in snapshots:
+            if snapshot.startswith(PREFIX_TEST_VOLUME):
+                self.app.post("/VolumeDriver.Snapshot.Remove", json.dumps({"Name": snapshot}))
 
-                # Delete each item, trying both BTRFS and regular deletion
-                for item_path in items_to_delete:
-                    try:
-                        if os.path.exists(item_path):
-                            if os.path.isdir(item_path):
-                                # Try BTRFS subvolume deletion first
-                                try:
-                                    btrfs.Subvolume(item_path).delete(check=False)
-                                except Exception:
-                                    # If BTRFS deletion fails, try regular directory removal
+        # Clean up volumes
+        resp = self.app.post("/VolumeDriver.List", "{}")
+        volumes = jsonloads(resp.body)["Volumes"]
+        for volume in volumes:
+            if volume["Name"].startswith(PREFIX_TEST_VOLUME):
+                self.app.post("/VolumeDriver.Remove", json.dumps({"Name": volume["Name"]}))
 
-                                    shutil.rmtree(item_path, ignore_errors=True)
-                            else:
-                                # Regular file
-                                os.unlink(item_path)
-                    except Exception:
-                        pass  # Continue with cleanup even if individual items fail
+        # Verify cleanup
+        resp = self.app.post("/VolumeDriver.List", "{}")
+        volumes = jsonloads(resp.body)["Volumes"]
+        self.assertEqual(len(volumes), 0)
+
+        resp = self.app.get("/VolumeDriver.Snapshot.List")
+        snapshots = jsonloads(resp.body)["Snapshots"]
+        self.assertEqual(len(snapshots), 0)
 
     def setUp(self):
         with open(SCHEDULE, "w") as f:
             f.truncate()
-        self.app = TestApp(cli.app)
+        self.app = TestApp(cli.docker_plugin_app)
         # Check that the target dir is BTRFS - skip tests if not
         # Set BUTTERVOLUME_SKIP_BTRFS_CHECK=1 to skip this check for testing
         if not os.environ.get("BUTTERVOLUME_SKIP_BTRFS_CHECK"):
@@ -91,7 +85,6 @@ class TestCase(unittest.TestCase):
                     raise unittest.SkipTest(
                         f"BTRFS filesystem required at {VOLUMES_PATH}. Error: {e}"
                     ) from None
-        self.cleanup()
 
     def _try_create_btrfs_filesystem(self):
         """Try to create a BTRFS filesystem for testing"""
