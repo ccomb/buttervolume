@@ -12,6 +12,7 @@ import traceback
 import urllib.parse
 from datetime import datetime, timedelta
 from os.path import exists
+from pathlib import Path
 from subprocess import CalledProcessError
 
 import requests_unixsocket
@@ -40,6 +41,7 @@ from buttervolume.plugin import (
     setup_routes,
     validate_purge_pattern,
 )
+from buttervolume.state import StateManager
 
 VERSION = "3.13.0"
 logging.basicConfig(level=LOGLEVEL)
@@ -339,7 +341,6 @@ def send(args, test=False):
         print(res)
     return res
 
-
 def sync(args, test=False):
     urlpath = "/VolumeDriver.Volume.Sync"
     param = {"Volumes": args.volumes, "Hosts": args.hosts}
@@ -356,7 +357,6 @@ def sync(args, test=False):
         print(res)
     return res
 
-
 def remove(args):
     urlpath = "/VolumeDriver.Snapshot.Remove"
     param = json.dumps({"Name": args.name[0]})
@@ -365,7 +365,6 @@ def remove(args):
     if res:
         print(res)
     return res
-
 
 def purge(args, test=False):
     urlpath = "/VolumeDriver.Snapshots.Purge"
@@ -550,7 +549,6 @@ def run_cluster_server(app):
         log.warning("TLS not enabled for cluster API. Communication will be insecure.")
         server = serve(app, host=host, port=port)
 
-
 def shutdown(event):
     log.info("Shutting down buttervolume...")
     event.set()  # Signal all threads to exit
@@ -563,7 +561,6 @@ def shutdown(event):
         except OSError as e:
             log.warning("Could not remove socket %s: %s", SOCKET, e)
     log.info("Buttervolume shut down.")
-
 
 def run(_, test=False):
     if not exists(VOLUMES_PATH):
@@ -581,6 +578,7 @@ def run(_, test=False):
         except OSError as e:
             log.warning("Could not remove stale socket %s: %s", SOCKET, e)
 
+    state_manager = StateManager(Path(VOLUMES_PATH) / "cluster_state.json")
     event = threading.Event()
     threads = []
 
@@ -589,7 +587,7 @@ def run(_, test=False):
     scheduler_thread = threading.Thread(
         name="Scheduler",
         target=scheduler,
-        args=(event,),
+        args=(event, state_manager),
         kwargs={"config": SCHEDULE, "test": test, "timer": TIMER},
     )
     threads.append(scheduler_thread)
@@ -603,7 +601,8 @@ def run(_, test=False):
     docker_thread.daemon = True
     threads.append(docker_thread)
 
-    cluster_api_app.install(AuthPlugin(CLUSTER_SHARED_SECRET))
+    if CLUSTER_SHARED_SECRET:
+        cluster_api_app.install(AuthPlugin(CLUSTER_SHARED_SECRET))
     cluster_thread = threading.Thread(
         name="ClusterApiServer",
         target=run_cluster_server,
@@ -627,7 +626,6 @@ def run(_, test=False):
     # The scheduler is the only non-daemonic thread, and it will finish
     # when the shutdown event is set.
     scheduler_thread.join()
-
 
 def init_btrfs(args):
     """Initialize BTRFS filesystem for buttervolume"""
