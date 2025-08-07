@@ -95,6 +95,9 @@ if not os.path.exists(USOCKET):
 TIMER = int(getconfig(config, "TIMER", 60))
 DTFORMAT = getconfig(config, "DTFORMAT", "%Y-%m-%dT%H:%M:%S.%f")
 LOGLEVEL = getattr(logging, getconfig(config, "LOGLEVEL", "INFO"))
+TLS_CERT_PATH = getconfig(config, "TLS_CERT_PATH", None)
+TLS_KEY_PATH = getconfig(config, "TLS_KEY_PATH", None)
+CLUSTER_SHARED_SECRET = getconfig(config, "CLUSTER_SHARED_SECRET", None)
 
 logging.basicConfig(level=LOGLEVEL)
 log = logging.getLogger()

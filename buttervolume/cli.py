@@ -22,6 +22,8 @@ from webtest import TestApp
 
 from buttervolume.api import cluster_api_app
 from buttervolume.plugin import (
+    CLUSTER_SHARED_SECRET,
+    DTFORMAT,
     FIELDS,
     LOGLEVEL,
     SCHEDULE,
@@ -29,6 +31,8 @@ from buttervolume.plugin import (
     SNAPSHOTS_PATH,
     SOCKET,
     TIMER,
+    TLS_CERT_PATH,
+    TLS_KEY_PATH,
     USOCKET,
     VOLUMES_PATH,
     convert_purge_pattern,
@@ -495,7 +499,14 @@ def run_cluster_server(app):
     host = "0.0.0.0"
     port = 8723
     log.info(f"Listening for cluster API requests on {host}:{port}...")
-    serve(app, host=host, port=port)
+    if TLS_CERT_PATH and TLS_KEY_PATH:
+        log.info("TLS enabled for cluster API")
+        server = serve(
+            app, host=host, port=port, ssl_adapter=WaitressTlsAdapter(TLS_CERT_PATH, TLS_KEY_PATH)
+        )
+    else:
+        log.warning("TLS not enabled for cluster API. Communication will be insecure.")
+        server = serve(app, host=host, port=port)
 
 
 def shutdown(event):
@@ -887,3 +898,4 @@ def main():
             sys.exit(1)
     else:
         parser.print_help()
+
