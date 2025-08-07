@@ -15,7 +15,7 @@ from os.path import exists
 from subprocess import CalledProcessError
 
 import requests_unixsocket
-from bottle import Bottle
+from bottle import Bottle, request, response
 from requests.exceptions import ConnectionError
 from waitress import serve
 from webtest import TestApp
@@ -35,6 +35,7 @@ from buttervolume.plugin import (
     TLS_KEY_PATH,
     USOCKET,
     VOLUMES_PATH,
+    compute_purges,
     convert_purge_pattern,
     setup_routes,
     validate_purge_pattern,
@@ -45,6 +46,47 @@ logging.basicConfig(level=LOGLEVEL)
 log = logging.getLogger()
 docker_plugin_app = Bottle()
 setup_routes(docker_plugin_app)
+
+
+class AuthPlugin:
+    """Bottle plugin for bearer token authentication."""
+
+    name = "auth"
+    api = 2
+
+    def __init__(self, secret):
+        self.secret = secret
+
+    def apply(self, fn, context):
+        def wrapper(*args, **kwargs):
+            auth_header = request.headers.get("Authorization")
+            if not auth_header or not auth_header.startswith("Bearer "):
+                response.status = 401
+                return {"Err": "Missing or invalid Authorization header"}
+
+            token = auth_header.split(" ", 1)[1]
+            if token != self.secret:
+                response.status = 403
+                return {"Err": "Invalid authentication token"}
+
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+
+class WaitressTlsAdapter(object):
+    """Adapter for Waitress to use TLS."""
+
+    def __init__(self, certificate, private_key):
+        self.certificate = certificate
+        self.private_key = private_key
+
+    def __call__(self, sock):
+        import ssl
+
+        return ssl.wrap_socket(
+            sock, server_side=True, certfile=self.certificate, keyfile=self.private_key
+        )
 
 
 ReplicationInProgress = set()
@@ -561,6 +603,7 @@ def run(_, test=False):
     docker_thread.daemon = True
     threads.append(docker_thread)
 
+    cluster_api_app.install(AuthPlugin(CLUSTER_SHARED_SECRET))
     cluster_thread = threading.Thread(
         name="ClusterApiServer",
         target=run_cluster_server,
@@ -898,4 +941,3 @@ def main():
             sys.exit(1)
     else:
         parser.print_help()
-
