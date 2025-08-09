@@ -19,6 +19,10 @@ class StateManager:
         with self._lock:
             return json.loads(json.dumps(self._state.get("volumes", {}).get(volume_name)))
 
+    def get_peers(self):
+        with self._lock:
+            return self._state.get("peers", [])
+
     def set_volume_lock(self, volume_name: str, lock_data: dict):
         with self._lock:
             if "volumes" not in self._state:

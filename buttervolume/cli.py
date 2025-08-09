@@ -404,6 +404,104 @@ def purge(args, test=False, now=None):
     return res
 
 
+def promote(args):
+    """Promote a volume to a new master."""
+    vol_name = args.volume
+    candidate = args.candidate
+
+    # 1. Get peers from the candidate
+    try:
+        resp = requests.get(f"https://{candidate}:8723/api/v1/peers",
+                              headers={"Authorization": f"Bearer {CLUSTER_SHARED_SECRET}"},
+                              verify=TLS_CA_CERT_PATH
+        resp.raise_for_status()
+        peers = resp.json()["Peers"]
+    except Exception as e:
+        log.error(f"Could not get peers from {candidate}: {e}")
+        return False
+
+    # 2. Get current state from all peers
+    current_term = 0
+    for peer in peers:
+        try:
+            resp = requests.get(f"https://{peer}:8723/api/v1/volumes/{vol_name}",
+                                  headers={"Authorization": f"Bearer {CLUSTER_SHARED_SECRET}"},
+                                  verify=TLS_CA_CERT_PATH
+            resp.raise_for_status()
+            state = resp.json()
+            if state and state.get("term", 0) > current_term:
+                current_term = state["term"]
+        except Exception as e:
+            log.warning(f"Could not get state from {peer}: {e}")
+
+    # 3. Send acquire-lock to all peers
+    new_term = current_term + 1
+    log.info(f"Attempting to acquire lock for term {new_term}")
+    success_count = 0
+    for peer in peers:
+        try:
+            resp = requests.post(f"https://{peer}:8723/api/v1/volumes/{vol_name}/acquire-lock",
+                                 json={"term": new_term, "candidate": candidate},
+                                 headers={"Authorization": f"Bearer {CLUSTER_SHARED_SECRET}"},
+                                 verify=TLS_CA_CERT_PATH
+            if resp.status_code == 200:
+                success_count += 1
+            else:
+                log.warning(f"Failed to acquire lock on {peer}: {resp.text}")
+        except Exception as e:
+            log.warning(f"Could not acquire lock on {peer}: {e}")
+
+    # 4. Check for quorum
+    quorum = len(peers) // 2 + 1
+    if success_count < quorum:
+        log.error(f"Failed to acquire quorum. Only {success_count}/{len(peers)} nodes acquired lock.")
+        # Abort promotion
+        for peer in peers:
+            try:
+                requests.post(f"https://{peer}:8723/api/v1/volumes/{vol_name}/abort-promotion",
+                              json={"term": new_term, "candidate": candidate},
+                              headers={"Authorization": f"Bearer {CLUSTER_SHARED_SECRET}"},
+                              verify=TLS_CA_CERT_PATH
+            except Exception as e:
+                log.warning(f"Could not abort promotion on {peer}: {e}")
+        return False
+
+    # 5. Sync data from old master
+    log.info("Quorum acquired. Syncing data from old master...")
+    old_master = None
+    for peer in peers:
+        try:
+            resp = requests.get(f"https://{peer}:8723/api/v1/volumes/{vol_name}",
+                                  headers={"Authorization": f"Bearer {CLUSTER_SHARED_SECRET}"},
+                                  verify=TLS_CA_CERT_PATH)
+            resp.raise_for_status()
+            state = resp.json()
+            if state and state.get("active_node") and state.get("term") == current_term:
+                old_master = state.get("active_node")
+                break
+        except Exception as e:
+            log.warning(f"Could not get state from {peer}: {e}")
+    if old_master:
+        sync(Arg(volumes=[vol_name], hosts=[old_master]))
+    else:
+        log.warning("Could not determine old master. Skipping data sync.")
+
+    # 6. Send commit-state to all peers
+    log.info("Data synced. Committing state...")
+    for peer in peers:
+        try:
+            resp = requests.post(f"https://{peer}:8723/api/v1/volumes/{vol_name}/commit-state",
+                                 json={"term": new_term, "active_node": candidate},
+                                 headers={"Authorization": f"Bearer {CLUSTER_SHARED_SECRET}"},
+                                 verify=TLS_CA_CERT_PATH
+            resp.raise_for_status()
+        except Exception as e:
+            log.warning(f"Could not commit state on {peer}: {e}")
+
+    print(f"Successfully promoted {vol_name} to {candidate}")
+    return True
+
+
 class Arg:
     def __init__(self, *_, **kw):
         for k, v in kw.items():
@@ -470,7 +568,7 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER, now=Non
                         # 1. Get remote snapshots
                         remote_snapshots_resp = requests.get(f"https://{host}:8723/api/v1/volumes/{name}/snapshots",
                                                            headers={"Authorization": f"Bearer {CLUSTER_SHARED_SECRET}"},
-                                                           verify=False) # TODO: add cert verification
+                                                           verify=TLS_CA_CERT_PATH
                         remote_snapshots_resp.raise_for_status()
                         remote_snapshots = remote_snapshots_resp.json().get("Snapshots", [])
 
@@ -580,9 +678,8 @@ def run_docker_server(app):
 
 def run_cluster_server(app):
     """Serves the cluster API on a TCP socket."""
-    # TODO: Make host and port configurable
-    host = "0.0.0.0"
-    port = 8723
+    host = CLUSTER_HOST
+    port = CLUSTER_PORT
     log.info(f"Listening for cluster API requests on {host}:{port}...")
     if TLS_CERT_PATH and TLS_KEY_PATH:
         log.info("TLS enabled for cluster API")
@@ -947,6 +1044,10 @@ def main():
         help="Don't really purge but tell what would be deleted",
     )
 
+    parser_promote = subparsers.add_parser("promote", help="Promote a volume to a new master")
+    parser_promote.add_argument("volume", help="Name of the volume to promote")
+    parser_promote.add_argument("candidate", help="URL of the candidate node")
+
     parser_init = subparsers.add_parser("init", help="Initialize BTRFS filesystem for buttervolume")
     init_group = parser_init.add_mutually_exclusive_group()
     init_group.add_argument(
@@ -976,6 +1077,7 @@ def main():
     parser_sync.set_defaults(func=sync)
     parser_remove.set_defaults(func=remove)
     parser_purge.set_defaults(func=purge)
+    parser_promote.set_defaults(func=promote)
     parser_init.set_defaults(func=init_btrfs)
 
     args = parser.parse_args()

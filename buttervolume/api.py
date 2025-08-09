@@ -92,6 +92,18 @@ def rsync_proxy(vol_name):
         return {"Err": str(e)}
 
 
+@cluster_api_app.get("/api/v1/peers")
+def get_peers(state_manager):
+    """Returns the list of peers."""
+    return {"Peers": state_manager.get_peers(), "Err": ""}
+
+
+@cluster_api_app.get("/api/v1/volumes/<vol_name>")
+def get_volume(vol_name, state_manager):
+    """Returns the state of a single volume."""
+    return state_manager.get_volume_state(vol_name)
+
+
 @cluster_api_app.post("/api/v1/volumes/<vol_name>/acquire-lock")
 def acquire_lock(vol_name, state_manager):
     """Attempts to acquire an exclusive lock to become the new master for a volume."""
