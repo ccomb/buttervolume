@@ -24,6 +24,8 @@ from webtest import TestApp
 
 from buttervolume.api import cluster_api_app
 from buttervolume.plugin import (
+    CLUSTER_HOST,
+    CLUSTER_PORT,
     CLUSTER_SHARED_SECRET,
     DTFORMAT,
     FIELDS,
@@ -33,6 +35,7 @@ from buttervolume.plugin import (
     SNAPSHOTS_PATH,
     SOCKET,
     TIMER,
+    TLS_CA_CERT_PATH,
     TLS_CERT_PATH,
     TLS_KEY_PATH,
     USOCKET,
@@ -370,7 +373,7 @@ def sync(args, test=False):
             rsync_cmd = ["rsync", "--client", ".", os.path.join(VOLUMES_PATH, args.volumes[0])]
             p = subprocess.Popen(rsync_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
             url = f"https://{host}:8723{urlpath}"
-            resp = requests.post(url, data=p.stdout, headers=headers, stream=True, verify=False)
+            resp = requests.post(url, data=p.stdout, headers=headers, stream=True, verify=TLS_CA_CERT_PATH)
             resp.raise_for_status()
             shutil.copyfileobj(resp.raw, p.stdin)
             p.wait()
@@ -413,7 +416,7 @@ def promote(args):
     try:
         resp = requests.get(f"https://{candidate}:8723/api/v1/peers",
                               headers={"Authorization": f"Bearer {CLUSTER_SHARED_SECRET}"},
-                              verify=TLS_CA_CERT_PATH
+                              verify=TLS_CA_CERT_PATH)
         resp.raise_for_status()
         peers = resp.json()["Peers"]
     except Exception as e:
@@ -426,7 +429,7 @@ def promote(args):
         try:
             resp = requests.get(f"https://{peer}:8723/api/v1/volumes/{vol_name}",
                                   headers={"Authorization": f"Bearer {CLUSTER_SHARED_SECRET}"},
-                                  verify=TLS_CA_CERT_PATH
+                                  verify=TLS_CA_CERT_PATH)
             resp.raise_for_status()
             state = resp.json()
             if state and state.get("term", 0) > current_term:
@@ -443,7 +446,7 @@ def promote(args):
             resp = requests.post(f"https://{peer}:8723/api/v1/volumes/{vol_name}/acquire-lock",
                                  json={"term": new_term, "candidate": candidate},
                                  headers={"Authorization": f"Bearer {CLUSTER_SHARED_SECRET}"},
-                                 verify=TLS_CA_CERT_PATH
+                                 verify=TLS_CA_CERT_PATH)
             if resp.status_code == 200:
                 success_count += 1
             else:
@@ -461,7 +464,7 @@ def promote(args):
                 requests.post(f"https://{peer}:8723/api/v1/volumes/{vol_name}/abort-promotion",
                               json={"term": new_term, "candidate": candidate},
                               headers={"Authorization": f"Bearer {CLUSTER_SHARED_SECRET}"},
-                              verify=TLS_CA_CERT_PATH
+                              verify=TLS_CA_CERT_PATH)
             except Exception as e:
                 log.warning(f"Could not abort promotion on {peer}: {e}")
         return False
@@ -493,7 +496,7 @@ def promote(args):
             resp = requests.post(f"https://{peer}:8723/api/v1/volumes/{vol_name}/commit-state",
                                  json={"term": new_term, "active_node": candidate},
                                  headers={"Authorization": f"Bearer {CLUSTER_SHARED_SECRET}"},
-                                 verify=TLS_CA_CERT_PATH
+                                 verify=TLS_CA_CERT_PATH)
             resp.raise_for_status()
         except Exception as e:
             log.warning(f"Could not commit state on {peer}: {e}")
@@ -568,7 +571,7 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER, now=Non
                         # 1. Get remote snapshots
                         remote_snapshots_resp = requests.get(f"https://{host}:8723/api/v1/volumes/{name}/snapshots",
                                                            headers={"Authorization": f"Bearer {CLUSTER_SHARED_SECRET}"},
-                                                           verify=TLS_CA_CERT_PATH
+                                                           verify=TLS_CA_CERT_PATH)
                         remote_snapshots_resp.raise_for_status()
                         remote_snapshots = remote_snapshots_resp.json().get("Snapshots", [])
 
@@ -895,6 +898,32 @@ def init_btrfs(args):
 
     return True
 
+def cluster_init(args):
+    """Initializes a new cluster."""
+    state_file = Path(VOLUMES_PATH) / "cluster_state.json"
+    if state_file.exists():
+        log.error(f"Cluster state file already exists at {state_file}. Aborting.")
+        return False
+
+    # Generate a new shared secret
+    secret = os.urandom(24).hex()
+    config_path = "/etc/buttervolume/config.ini"
+    config = configparser.ConfigParser()
+    config.read(config_path)
+    if not config.has_section("DEFAULT"):
+        config.add_section("DEFAULT")
+    config["DEFAULT"]["ClusterSharedSecret"] = secret
+    with open(config_path, "w") as f:
+        config.write(f)
+
+    # Create the initial state file
+    initial_state = {"peers": [args.self_addr], "volumes": {}}
+    with state_file.open("w") as f:
+        json.dump(initial_state, f, indent=2)
+
+    log.info(f"Successfully initialized cluster. New shared secret written to {config_path}")
+    return True
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -1066,6 +1095,11 @@ def main():
         help="Size of BTRFS image file, only with --file (default: 10G)",
     )
 
+    parser_cluster = subparsers.add_parser("cluster", help="Cluster management commands")
+    cluster_subparsers = parser_cluster.add_subparsers(help="sub-commands")
+    parser_cluster_init = cluster_subparsers.add_parser("init", help="Initialize a new cluster")
+    parser_cluster_init.add_argument("--self-addr", required=True, help="The address of this node")
+
     parser_run.set_defaults(func=run)
     parser_snapshot.set_defaults(func=snapshot)
     parser_snapshots.set_defaults(func=snapshots)
@@ -1079,6 +1113,7 @@ def main():
     parser_purge.set_defaults(func=purge)
     parser_promote.set_defaults(func=promote)
     parser_init.set_defaults(func=init_btrfs)
+    parser_cluster_init.set_defaults(func=cluster_init)
 
     args = parser.parse_args()
     if hasattr(args, "func"):
