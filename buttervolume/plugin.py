@@ -823,6 +823,8 @@ def setup_routes(app):
         """
         volume_name = req["Name"]
         dryrun = req.get("Dryrun", False)
+        now_str = req.get("now")
+        now = datetime.strptime(now_str, DTFORMAT) if now_str else datetime.now()
 
         # Validate volume name
         validate_volume_name(volume_name)
@@ -839,7 +841,7 @@ def setup_routes(app):
         snapshots = [s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(volume_name + "@")]
 
         # Compute which snapshots to purge
-        now = datetime.now()
+        now = datetime.strptime(now_str, DTFORMAT) if now_str else datetime.now()
         purge_list = compute_purges(snapshots, pattern, now)
 
         for snapshot in purge_list:

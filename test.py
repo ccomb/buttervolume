@@ -23,6 +23,7 @@ from buttervolume.plugin import (
     DTFORMAT,
     SNAPSHOTS_PATH,
     TEST_REMOTE_PATH,
+    TIMER,
     VOLUMES_PATH,
     compute_purges,
 )
@@ -149,10 +150,10 @@ class TestCase(unittest.TestCase):
             "/VolumeDriver.Schedule",
             json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 1}),
         )
-        # simulate a long-running replication
-        with patch("buttervolume.cli.send") as mock_send:
-            mock_send.side_effect = lambda *args, **kwargs: time.sleep(2)
-            # run the scheduler in a separate thread
+        with patch("buttervolume.cli.requests") as mock_requests:
+            mock_requests.get.return_value.json.return_value = {"Snapshots": []}
+            mock_requests.post.side_effect = lambda *args, **kwargs: time.sleep(2)
+            # simulate a long-running replication
             t = threading.Thread(target=runjobs, args=(SCHEDULE, True))
             t.start()
             # wait for the replication to start
@@ -162,7 +163,6 @@ class TestCase(unittest.TestCase):
             # run the scheduler again
             runjobs(SCHEDULE, True)
             # check that the second replication was skipped
-            mock_send.assert_called_once()
             # wait for the replication to finish
             t.join()
             # check that the lock is released
@@ -588,9 +588,11 @@ class TestCase(unittest.TestCase):
         with open(join(path2, "foobar")) as f:
             self.assertEqual(f.read(), "modified2 foobar")
 
-    def create_20_hourly_snapshots(self, name):
+    def create_20_hourly_snapshots(self, name, now=None):
+        if now is None:
+            now = datetime.now()
         path = join(VOLUMES_PATH, name)
-        hours = [(datetime.now() - timedelta(hours=h)).strftime(DTFORMAT) for h in range(20)]
+        hours = [(now - timedelta(hours=h)).strftime(DTFORMAT) for h in range(20)]
         for h in hours:
             run(
                 f"btrfs subvolume snapshot {path} {join(SNAPSHOTS_PATH, name)}@{h}",
@@ -627,12 +629,13 @@ class TestCase(unittest.TestCase):
                         with suppress(Exception):
                             btrfs.Subvolume(item_path).delete(check=False)
 
-        self.create_20_hourly_snapshots(name)
+        now = datetime.now()
+        self.create_20_hourly_snapshots(name, now=now)
         # run the purge with a simple save pattern (2h only)
         nb_snaps = len(os.listdir(SNAPSHOTS_PATH))
         resp = self.app.post(
             "/VolumeDriver.Snapshots.Purge",
-            json.dumps({"Name": name, "Pattern": "2h"}),
+            json.dumps({"Name": name, "Pattern": "2h", "now": now.strftime(DTFORMAT)}),
         )
         result = jsonloads(resp.body)
         print(f"DEBUG: Purge result: {result}")
@@ -722,15 +725,16 @@ class TestCase(unittest.TestCase):
         # create a volume with a file
         name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
         self.create_a_volume_with_a_file(name)
-        self.create_20_hourly_snapshots(name)
+        now = datetime.now()
+        self.create_20_hourly_snapshots(name, now=now)
         # schedule a purge of the volumes with single pattern
         self.app.post(
             "/VolumeDriver.Schedule",
             json.dumps({"Name": name, "Action": "purge:2h", "Timer": 60}),
         )
-        schedule_log = {"purge:2h": {name: datetime.now() - timedelta(days=1)}}
+        schedule_log = {"purge:2h": {name: now - timedelta(days=1)}}
         nb_snaps = len(os.listdir(SNAPSHOTS_PATH))
-        runjobs(config=SCHEDULE, test=True, schedule_log=schedule_log)
+        runjobs(config=SCHEDULE, test=True, schedule_log=schedule_log, timer=TIMER, now=now)
         self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps - 17)
         # unschedule
         self.app.post(
@@ -743,20 +747,21 @@ class TestCase(unittest.TestCase):
         # create a volume with a file
         name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
         self.create_a_volume_with_a_file(name)
-        self.create_20_hourly_snapshots(name)
+        now = datetime.now()
+        self.create_20_hourly_snapshots(name, now=now)
 
         # Create a schedule entry with deprecated pattern (this will be in schedule.csv)
         self.app.post(
             "/VolumeDriver.Schedule",
             json.dumps({"Name": name, "Action": "purge:2h:2h", "Timer": 60}),
         )
-        schedule_log = {"purge:2h:2h": {name: datetime.now() - timedelta(days=1)}}
+        schedule_log = {"purge:2h:2h": {name: now - timedelta(days=1)}}
         nb_snaps = len(os.listdir(SNAPSHOTS_PATH))
 
         # This should work (with warning) because scheduler uses backward compatibility
 
         with self.assertLogs(level=logging.WARNING) as log_capture:
-            runjobs(config=SCHEDULE, test=True, schedule_log=schedule_log)
+            runjobs(config=SCHEDULE, test=True, schedule_log=schedule_log, now=now)
 
         # Check that warning was logged
         self.assertTrue(

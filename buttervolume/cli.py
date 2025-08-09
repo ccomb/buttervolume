@@ -15,6 +15,7 @@ from os.path import exists
 from pathlib import Path
 from subprocess import CalledProcessError
 
+import requests
 import requests_unixsocket
 from bottle import Bottle, request, response
 from requests.exceptions import ConnectionError
@@ -76,6 +77,23 @@ class AuthPlugin:
         return wrapper
 
 
+class StateManagerPlugin:
+    """Bottle plugin for StateManager."""
+
+    name = "state_manager"
+    api = 2
+
+    def __init__(self, state_manager):
+        self.state_manager = state_manager
+
+    def apply(self, fn, context):
+        def wrapper(*args, **kwargs):
+            kwargs["state_manager"] = self.state_manager
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+
 class WaitressTlsAdapter(object):
     """Adapter for Waitress to use TLS."""
 
@@ -126,7 +144,6 @@ class Session:
             return self.session.get(*a, **kw)
         except ConnectionError:
             self._log_connection_error()
-
 
 def get_from(resp, key):
     """get specified key from plugin response output"""
@@ -342,20 +359,24 @@ def send(args, test=False):
     return res
 
 def sync(args, test=False):
-    urlpath = "/VolumeDriver.Volume.Sync"
-    param = {"Volumes": args.volumes, "Hosts": args.hosts}
-    if test:
-        param["Test"] = True
-        resp = TestApp(docker_plugin_app).post(urlpath, json.dumps(param))
-    else:
-        resp = Session().post(
-            f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}",
-            json.dumps(param),
-        )
-    res = get_from(resp, "")
-    if res:
-        print(res)
-    return res
+    urlpath = f"/api/v1/volumes/{args.volumes[0]}/rsync-proxy"
+    headers = {"Authorization": f"Bearer {CLUSTER_SHARED_SECRET}"}
+    for host in args.hosts:
+        log.info(f"Syncing {args.volumes[0]} from {host}")
+        try:
+            # We are the client. We run rsync and pipe its output to the server.
+            # The server then runs rsync in server mode and pipes our output to it.
+            # The server's rsync output is then streamed back to us.
+            rsync_cmd = ["rsync", "--client", ".", os.path.join(VOLUMES_PATH, args.volumes[0])]
+            p = subprocess.Popen(rsync_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+            url = f"https://{host}:8723{urlpath}"
+            resp = requests.post(url, data=p.stdout, headers=headers, stream=True, verify=False)
+            resp.raise_for_status()
+            shutil.copyfileobj(resp.raw, p.stdin)
+            p.wait()
+        except Exception as e:
+            log.error(f"Error syncing from {host}: {e}")
+    return True
 
 def remove(args):
     urlpath = "/VolumeDriver.Snapshot.Remove"
@@ -366,7 +387,7 @@ def remove(args):
         print(res)
     return res
 
-def purge(args, test=False):
+def purge(args, test=False, now=None):
     urlpath = "/VolumeDriver.Snapshots.Purge"
     param = {"Name": args.name[0], "Pattern": args.pattern[0], "Dryrun": args.dryrun}
     if test:
@@ -389,7 +410,9 @@ class Arg:
             setattr(self, k, v)
 
 
-def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
+def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER, now=None):
+    if now is None:
+        now = datetime.now()
     if schedule_log is None:
         schedule_log = {"snapshot": {}, "replicate": {}, "synchronize": {}}
     if exists(SCHEDULE_DISABLED):
@@ -412,7 +435,6 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                 if not enabled:
                     log.info(f"{action} of {name} is disabled")
                     continue
-                now = datetime.now()
                 # just starting, we consider beeing late on snapshots
                 schedule_log.setdefault(action, {})
                 schedule_log[action].setdefault(name, now - timedelta(1))
@@ -444,14 +466,38 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                             log.info("Could not snapshot %s", name)
                             continue
                         log.info("Successfully snapshotted to %s", snap)
-                        send(Arg(snapshot=[snap], host=[host]), test=test)
+                        # New HTTP replication logic
+                        # 1. Get remote snapshots
+                        remote_snapshots_resp = requests.get(f"https://{host}:8723/api/v1/volumes/{name}/snapshots",
+                                                           headers={"Authorization": f"Bearer {CLUSTER_SHARED_SECRET}"},
+                                                           verify=False) # TODO: add cert verification
+                        remote_snapshots_resp.raise_for_status()
+                        remote_snapshots = remote_snapshots_resp.json().get("Snapshots", [])
+
+                        # 2. Find latest common snapshot
+                        local_snapshots = [s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")]
+                        common_snapshots = sorted(list(set(local_snapshots) & set(remote_snapshots)), reverse=True)
+                        parent = common_snapshots[0] if common_snapshots else None
+
+                        # 3. Send snapshot
+                        send_url = f"http://localhost:8723/api/v1/volumes/{name}/send-snapshot?snapshot={snap}"
+                        if parent:
+                            send_url += f"&parent={parent}"
+                        send_resp = requests.get(send_url, stream=True, headers={"Authorization": f"Bearer {CLUSTER_SHARED_SECRET}"})
+                        send_resp.raise_for_status()
+
+                        # 4. Receive snapshot
+                        receive_url = f"https://{host}:8723/api/v1/volumes/{name}/receive-snapshot"
+                        receive_resp = requests.post(receive_url, data=send_resp.raw, headers={"Authorization": f"Bearer {CLUSTER_SHARED_SECRET}"}, verify=False)
+                        receive_resp.raise_for_status()
+
                         log.info("Successfully replicated %s to %s", name, snap)
                         schedule_log[action][name] = now
                     except Exception as e:
                         log.warning("Replication failed: %s", e)
                         # remove snapshot that was created for the failed replication
                         if snap:
-                            remove(Arg(name=[snap]), test=test)
+                            remove(Arg(name=[snap]))
                             log.info("Removed snapshot %s for failed replication", snap)
                     finally:
                         ReplicationInProgress.remove(name)
@@ -476,7 +522,7 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                         log.error(f"Invalid purge pattern '{pattern}': {e}")
                         continue
 
-                    purge(Arg(name=[name], pattern=[actual_pattern], dryrun=False), test=test)
+                    purge(Arg(name=[name], pattern=[actual_pattern], dryrun=False), test=test, now=now)
                     log.info("Finished purging")
                     schedule_log[action][name] = now
                 if action.startswith("synchronize:"):
@@ -485,7 +531,7 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                     # do a snapshot to save state before pulling data
                     snap = snapshot(Arg(name=[name]), test=test)
                     log.debug("Successfully snapshotted to %s", snap)
-                    sync(Arg(volumes=[name], hosts=hosts), test=test)
+                    sync(Arg(volumes=[name], hosts=hosts))
                     log.debug("End of %s synchronization from %s", name, hosts)
                     schedule_log[action][name] = now
             except CalledProcessError as e:
@@ -512,7 +558,7 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                 )
 
 
-def scheduler(event, config=SCHEDULE, test=False, timer=TIMER):
+def scheduler(event, state_manager, config=SCHEDULE, test=False, timer=TIMER):
     """Read the scheduler config and apply it, then run scheduler again."""
     log.info(f"Starting the scheduler thread. Next jobs will run in {timer} seconds")
     schedule_log = {"snapshot": {}, "replicate": {}, "synchronize": {}}
@@ -527,12 +573,10 @@ def scheduler(event, config=SCHEDULE, test=False, timer=TIMER):
                 log.critical("An exception occured in the scheduling job")
                 log.critical(traceback.format_exc())
 
-
 def run_docker_server(app):
     """Serves the Docker plugin on the Unix socket."""
     log.info(f"Listening to Docker requests on {SOCKET}...")
     serve(app, unix_socket=SOCKET, unix_socket_perms="660")
-
 
 def run_cluster_server(app):
     """Serves the cluster API on a TCP socket."""
@@ -603,6 +647,7 @@ def run(_, test=False):
 
     if CLUSTER_SHARED_SECRET:
         cluster_api_app.install(AuthPlugin(CLUSTER_SHARED_SECRET))
+    cluster_api_app.install(StateManagerPlugin(state_manager))
     cluster_thread = threading.Thread(
         name="ClusterApiServer",
         target=run_cluster_server,

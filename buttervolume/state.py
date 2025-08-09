@@ -29,6 +29,52 @@ class StateManager:
             self._state["volumes"][volume_name]["lock"] = lock_data
             self._save_to_disk()
 
+    def acquire_lock(self, vol_name, term, candidate):
+        with self._lock:
+            current_state = self._state.get("volumes", {}).get(vol_name, {})
+            current_term = current_state.get("term", 0)
+            lock = current_state.get("lock")
+
+            if term <= current_term:
+                return {"Err": f"Term {term} is not greater than current term {current_term}"}
+
+            if lock and lock.get("term", 0) > term:
+                return {"Err": f"A lock with a higher term {lock['term']} already exists"}
+
+            self._state.setdefault("volumes", {}).setdefault(vol_name, {})
+            self._state["volumes"][vol_name]["lock"] = {"term": term, "candidate": candidate}
+            self._save_to_disk()
+            return {"Err": ""}
+
+    def commit_state(self, vol_name, term, active_node):
+        with self._lock:
+            current_state = self._state.get("volumes", {}).get(vol_name, {})
+            current_term = current_state.get("term", 0)
+
+            if term < current_term:
+                return {"Err": f"Term {term} is less than current term {current_term}"}
+
+            self._state.setdefault("volumes", {}).setdefault(vol_name, {})
+            self._state["volumes"][vol_name]["active_node"] = active_node
+            self._state["volumes"][vol_name]["term"] = term
+            self._state["volumes"][vol_name]["lock"] = None
+            self._save_to_disk()
+            return {"Err": ""}
+
+    def abort_promotion(self, vol_name, term, candidate):
+        with self._lock:
+            current_state = self._state.get("volumes", {}).get(vol_name, {})
+            lock = current_state.get("lock")
+
+            if not lock:
+                return {"Err": ""}  # Already unlocked
+
+            if lock.get("term") == term and lock.get("candidate") == candidate:
+                self._state["volumes"][vol_name]["lock"] = None
+                self._save_to_disk()
+
+            return {"Err": ""}
+
     def _save_to_disk(self):
         # This private method MUST be called from within a locked section
         with self._state_file.open('w') as f:
