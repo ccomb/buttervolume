@@ -1,4 +1,5 @@
 import configparser
+import contextlib
 import csv
 import json
 import logging
@@ -48,6 +49,12 @@ class ReplicationError(ButtervolumeError):
     """Raised when replication fails"""
 
     pass
+
+
+class SnapshotAlreadyOnRemoteError(ReplicationError):
+    """Raised when a snapshot already exists on the remote"""
+    def __init__(self):
+        super().__init__("Snapshot already exists on remote")
 
 
 config = configparser.ConfigParser()
@@ -235,6 +242,48 @@ def run_btrfs_send_receive(
     return receive_stdout.decode()
 
 
+def run_btrfs_receive_remote_send(remote_host, remote_snapshot_path, parent_path=None):
+    """Securely run btrfs send/receive over SSH where the snapshot is received from a remote host"""
+    port = os.getenv("SSH_PORT", "1122")
+
+    # Build btrfs send command
+    send_cmd = ["btrfs", "send"]
+    if parent_path:
+        send_cmd.extend(["-p", parent_path])
+    send_cmd.append(remote_snapshot_path)
+
+    # Build SSH send command on the remote host
+    ssh_send_cmd = [
+        "ssh",
+        "-p",
+        port,
+        "-o",
+        "StrictHostKeyChecking=no",
+        remote_host,
+        " ".join(send_cmd),
+    ]
+
+    # Build local receive command
+    receive_cmd = ["btrfs", "receive", SNAPSHOTS_PATH]
+
+    # Execute ssh send | local receive using subprocess
+    send_proc = subprocess.Popen(ssh_send_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    receive_proc = subprocess.Popen(
+        receive_cmd, stdin=send_proc.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+
+    send_proc.stdout.close()  # Allow send_proc to receive a SIGPIPE if receive_proc exits
+    receive_stdout, receive_stderr = receive_proc.communicate()
+    send_proc.wait()
+
+    if send_proc.returncode != 0 or receive_proc.returncode != 0:
+        error_details = receive_stderr.decode()
+        raise ReplicationError(
+            f"btrfs send/receive failed (send: {send_proc.returncode}, "
+            f"receive: {receive_proc.returncode}): {error_details}"
+        )
+
+
 def add_debug_log(handler):
     def new_handler(*_, **kw):
         req = json.loads(request.body.read().decode() or "{}")
@@ -288,6 +337,18 @@ def volume_create(req):
             log.warning(f"Could not enable compression for volume {name}: {e}")
             # Don't fail volume creation if compression setting fails
 
+    schedules_opt = opts.get("schedules", None)
+    if schedules_opt:
+        for schedule_opt in schedules_opt.split(","):
+            schedule_opt_parts = schedule_opt.strip().split(" ")
+            if len(schedule_opt_parts) != 2:
+                raise ValidationError(f"Invalid schedule format: {schedule_opt}. Expected 'action timer'")
+            action, timer = schedule_opt_parts
+            schedule(name, timer, action)
+            # The snapshot_sync schedule should be paused when the volume is not mounted to avoid data loss
+            if action.startswith("snapshot_sync"):
+                schedule(name, "pause", action)
+
     return {"Err": ""}
 
 
@@ -298,12 +359,91 @@ def volumepath(name):
     return path
 
 
+def get_remote_snapshots(volume_name, remote_host, remote_snapshots):
+    port = os.getenv("SSH_PORT", "1122")
+    ssh_cmd = [
+        "ssh",
+        "-p",
+        port,
+        "-o",
+        "StrictHostKeyChecking=no",
+        remote_host,
+        f"cd {remote_snapshots}; ls -d {volume_name}@*",
+    ]
+    snapshots = (
+        subprocess.Popen(ssh_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        .stdout.read()
+        .decode()
+        .strip()
+        .split("\n")
+    )
+
+    return snapshots
+
+
+def get_last_remote_snapshot(volume_name, remote_host, test=False):
+    remote_snapshots = SNAPSHOTS_PATH if not test else TEST_REMOTE_PATH
+
+    snapshots = get_remote_snapshots(volume_name, remote_host, remote_snapshots)
+    return get_last_snapshot(volume_name, snapshots)
+
+
+def snapshot_sync(name, schedule, test=False):
+    remote_host = schedule["Action"].split(":")[1]
+    try:
+        last_remote_snapshot = get_last_remote_snapshot(name, remote_host, test)
+    except SnapshotNotFoundError:
+        last_remote_snapshot = None
+
+    try:
+        last_local_snapshot = get_last_snapshot(name, os.listdir(SNAPSHOTS_PATH))
+    except SnapshotNotFoundError:
+        last_local_snapshot = None
+
+    volpath = join(VOLUMES_PATH, name)
+    # Check if remote snapshot exists and is newer than local
+    if last_remote_snapshot and (not last_local_snapshot or last_remote_snapshot > last_local_snapshot):
+        # Retrieve the remote snapshot and restore it
+        remote_snapshots = SNAPSHOTS_PATH if not test else TEST_REMOTE_PATH
+        remote_snapshot_path = join(remote_snapshots, last_remote_snapshot)
+        parent_snapshot, sent_snapshots = get_parent_snapshot(last_remote_snapshot, remote_host)
+        parent_path = join(remote_snapshots, parent_snapshot) if parent_snapshot else None
+        snapshot_path = join(SNAPSHOTS_PATH, last_remote_snapshot)
+        log.info("Receiving snapshot %s from %s with parent %s", remote_snapshot_path, remote_host, parent_path)
+        try:
+            run_btrfs_receive_remote_send(remote_host, remote_snapshot_path, parent_path)
+        except ReplicationError as e:
+            log.warning(
+                "Failed using parent %s. Receiving full snapshot %s: %s", parent_path, remote_snapshot_path, str(e)
+            )
+            btrfs.Subvolume(snapshot_path).delete(check=False)
+            run_btrfs_receive_remote_send(remote_host, remote_snapshot_path)
+
+        manage_local_tracking_snapshots(snapshot_path, remote_host, sent_snapshots)
+
+        # Restore the remote snapshot
+        snapshot_restore(last_remote_snapshot)
+    elif last_local_snapshot and not btrfs.Subvolume(volpath).is_same_as(last_local_snapshot):
+        # We should restore the last local snapshot if the volume is different
+        # (this normally happens if we recreated the volume or if we received a snapshot from a different host)
+        snapshot_restore(last_local_snapshot)
+
+
+
 @route("/VolumeDriver.Mount", ["POST"])
 @add_debug_log
 @safe_handler
 def volume_mount(req):
     name = req["Name"]
     validate_volume_name(name)
+
+    # Check if there is a snapshot_sync schedule for this volume
+    ss_schedule = get_schedule(name, "snapshot_sync")
+    if ss_schedule:
+        snapshot_sync(name, ss_schedule, req.get("Test", False))
+        # This schedule must be resumed when the volume is mounted
+        schedule(name, "resume", ss_schedule["Action"])
+
     path = volumepath(name)
     return {"Mountpoint": path, "Err": ""}
 
@@ -320,7 +460,22 @@ def volume_path(req):
 
 @route("/VolumeDriver.Unmount", ["POST"])
 @add_debug_log
-def volume_unmount(_):
+@safe_handler
+def volume_unmount(req):
+    name = req["Name"]
+
+    # Check if there is a snapshot_sync schedule for this volume
+    ss_schedule = get_schedule(name, "snapshot_sync")
+    if ss_schedule:
+        # This schedule must be paused when the volume is unmounted
+        schedule(name, "pause", ss_schedule["Action"])
+        # We have to send a new snapshot before unmount
+        snapshot_name = snapshot(name)
+        remote_host = ss_schedule["Action"].split(":")[1]
+
+        with contextlib.suppress(SnapshotAlreadyOnRemoteError):
+            snapshot_send(snapshot_name, remote_host, req.get("Test", False))
+
     return {"Err": ""}
 
 
@@ -433,25 +588,7 @@ def driver_cap(_):
     return {"Capabilities": {"Scope": "local"}}
 
 
-@route("/VolumeDriver.Snapshot.Send", ["POST"])
-@add_debug_log
-def snapshot_send(req):
-    """The last sent snapshot is remembered by adding a suffix with the target"""
-    test = req.get("Test", False)
-    snapshot_name = req["Name"]
-    remote_host = req["Host"]
-
-    # Validate inputs
-    try:
-        validate_volume_name(snapshot_name.split("@")[0])  # Validate base volume name
-        validate_hostname(remote_host)
-    except ValidationError as e:
-        return {"Err": str(e)}
-
-    snapshot_path = join(SNAPSHOTS_PATH, snapshot_name)
-    remote_snapshots = SNAPSHOTS_PATH if not test else TEST_REMOTE_PATH
-
-    # take the latest snapshot suffixed with the target host
+def get_parent_snapshot(snapshot_name, remote_host):
     sent_snapshots = sorted([
         s
         for s in os.listdir(SNAPSHOTS_PATH)
@@ -462,8 +599,45 @@ def snapshot_send(req):
     latest = sent_snapshots[-1] if len(sent_snapshots) > 0 else None
     if latest and len(latest.rsplit("@")) == 3:
         latest = latest.rsplit("@", 1)[0]
+    return latest, sent_snapshots
 
-    parent_path = join(SNAPSHOTS_PATH, latest) if latest else None
+
+@route("/VolumeDriver.Snapshot.Send", ["POST"])
+@add_debug_log
+@safe_handler
+def snapshot_send_req(req):
+    """The last sent snapshot is remembered by adding a suffix with the target"""
+    test = req.get("Test", False)
+    snapshot_name = req["Name"]
+    remote_host = req["Host"]
+
+    snapshot_send(snapshot_name, remote_host, test)
+
+    return {"Err": ""}
+
+
+def snapshot_send(snapshot_name, remote_host, test=False):
+    # Validate inputs
+    volume_name = snapshot_name.split("@")[0]
+    validate_volume_name(volume_name)  # Validate base volume name
+    validate_hostname(remote_host)
+
+    snapshot_path = join(SNAPSHOTS_PATH, snapshot_name)
+    remote_snapshots = SNAPSHOTS_PATH if not test else TEST_REMOTE_PATH
+
+    parent_snapshot, sent_snapshots = get_parent_snapshot(snapshot_name, remote_host)
+    parent_path = join(SNAPSHOTS_PATH, parent_snapshot) if parent_snapshot else None
+    if parent_path != snapshot_path:
+        # Check if the remote host already has the snapshot
+        remote_snapshot_names = get_remote_snapshots(volume_name, remote_host, remote_snapshots)
+        if snapshot_name in remote_snapshot_names:
+            # The remote host already has the snapshot but we lack the tracking snapshot
+            parent_path = snapshot_path
+            manage_local_tracking_snapshots(snapshot_path, remote_host, sent_snapshots)
+
+    if parent_path == snapshot_path:
+        raise SnapshotAlreadyOnRemoteError()
+
     port = os.getenv("SSH_PORT", "1122")
 
     try:
@@ -471,28 +645,27 @@ def snapshot_send(req):
         run_btrfs_send_receive(snapshot_path, remote_host, remote_snapshots, parent_path, port)
     except ReplicationError as e:
         log.warning(
-            "Failed using parent %s. Sending full snapshot %s: %s", latest, snapshot_path, str(e)
+            "Failed using parent %s. Sending full snapshot %s: %s", parent_path, snapshot_path, str(e)
         )
-        try:
-            # Try to remove existing snapshot on remote and send full
 
-            rm_cmd = [
-                "ssh",
-                "-p",
-                port,
-                "-o",
-                "StrictHostKeyChecking=no",
-                remote_host,
-                f"btrfs subvolume delete {remote_snapshots}/{snapshot_name} || true",
-            ]
-            subprocess.run(rm_cmd, check=False, capture_output=True)
+        rm_cmd = [
+            "ssh",
+            "-p",
+            port,
+            "-o",
+            "StrictHostKeyChecking=no",
+            remote_host,
+            f"btrfs subvolume delete {remote_snapshots}/{snapshot_name} || true",
+        ]
+        subprocess.run(rm_cmd, check=False, capture_output=True)
 
-            # Send without parent
-            run_btrfs_send_receive(snapshot_path, remote_host, remote_snapshots, None, port)
-        except ReplicationError as e2:
-            log.error("Failed sending full snapshot: %s", str(e2))
-            return {"Err": str(e2)}
+        # Send without parent
+        run_btrfs_send_receive(snapshot_path, remote_host, remote_snapshots, None, port)
 
+    manage_local_tracking_snapshots(snapshot_path, remote_host, sent_snapshots)
+
+
+def manage_local_tracking_snapshots(snapshot_path, remote_host, sent_snapshots):
     # Create local tracking snapshot
     btrfs.Subvolume(snapshot_path).snapshot(f"{snapshot_path}@{remote_host}", readonly=True)
 
@@ -503,8 +676,6 @@ def snapshot_send(req):
         except Exception as e:
             log.warning("Failed to delete old snapshot %s: %s", old_snapshot, str(e))
 
-    return {"Err": ""}
-
 
 @route("/VolumeDriver.Snapshot", ["POST"])
 @add_debug_log
@@ -514,15 +685,38 @@ def volume_snapshot(req):
     name = req["Name"]
     validate_volume_name(name)
 
+    timestamped = snapshot(name)
+
+    return {"Err": "", "Snapshot": timestamped}
+
+
+def snapshot(name):
     path = join(VOLUMES_PATH, name)
     if not os.path.exists(path) or not btrfs.Subvolume(path).exists():
         raise VolumeNotFoundError(f"Volume '{name}': no such volume")
+
+    # First sync the filesystem
+    btrfs.run_safe(["btrfs", "filesystem", "sync", VOLUMES_PATH], timeout=30)
+
+    try:
+        last_snapshot = get_last_snapshot(name, os.listdir(SNAPSHOTS_PATH))
+    except SnapshotNotFoundError:
+        last_snapshot = None
 
     timestamped = f"{name}@{datetime.now().strftime(DTFORMAT)}"
     snapshot_path = join(SNAPSHOTS_PATH, timestamped)
 
     btrfs.Subvolume(path).snapshot(snapshot_path, readonly=True)
-    return {"Err": "", "Snapshot": timestamped}
+
+    # Check if there are actual changes since the last snapshot (if any)
+    # if not we delete the new snapshot and return the last one
+    if last_snapshot:
+        last_snapshot_path = join(SNAPSHOTS_PATH, last_snapshot)
+        if btrfs.Subvolume(snapshot_path).is_same_as(last_snapshot_path):
+            btrfs.Subvolume(snapshot_path).delete()
+            return last_snapshot
+
+    return timestamped
 
 
 @route("/VolumeDriver.Snapshot.List", ["GET"])
@@ -566,11 +760,15 @@ def snapshot_delete(req):
 
 @route("/VolumeDriver.Schedule", ["POST"])
 @add_debug_log
-def schedule(req):
+def schedule_req(req):
     """Schedule or unschedule a job"""
     name = req["Name"]
     timer = str(req["Timer"])
     action = req["Action"]
+    return schedule(name, timer, action)
+
+
+def schedule(name, timer, action):
     if os.path.exists(SCHEDULE_DISABLED):
         return {"Err": "Schedule is globally paused"}
     if not os.path.exists(SCHEDULE):
@@ -606,11 +804,23 @@ def scheduled(_):
     """List scheduled jobs"""
     if os.path.exists(SCHEDULE_DISABLED):
         return {"Err": "Schedule is globally paused"}
-    schedule = []
+    schedules = get_schedules()
+    return {"Err": "", "Schedule": schedules}
+
+
+def get_schedules():
     if os.path.exists(SCHEDULE):
         with open(SCHEDULE) as f:
-            schedule = list(csv.DictReader(f, fieldnames=FIELDS))
-    return {"Err": "", "Schedule": schedule}
+            return list(csv.DictReader(f, fieldnames=FIELDS))
+    return []
+
+
+def get_schedule(name, action):
+    schedules = get_schedules()
+    for schedule in schedules:
+        if schedule["Name"] == name and schedule["Action"].startswith(action):
+            return schedule
+    return None
 
 
 @route("/VolumeDriver.Schedule.Pause", ["POST"])
@@ -631,25 +841,35 @@ def schedule_enable(_):
     return {"Err": ""}
 
 
+def get_last_snapshot(volume_name, snapshots: list[str]):
+    validate_volume_name(volume_name)
+    # Filter out tracking snapshots
+    snapshots = [s for s in snapshots if s.startswith(volume_name + "@") and len(s.split("@")) == 2]
+    if not snapshots:
+        raise SnapshotNotFoundError(f"No snapshots found for volume '{volume_name}'")
+    return sorted(snapshots)[-1]
+
+
 @route("/VolumeDriver.Snapshot.Restore", ["POST"])
 @add_debug_log
 @safe_handler
-def snapshot_restore(req):
+def snapshot_restore_req(req):
     """
     Snapshot a volume and overwrite it with the specified snapshot.
     """
     snapshot_name = req["Name"]
     target_name = req.get("Target")
 
+    volume_backup = snapshot_restore(snapshot_name, target_name)
+
+    return {"VolumeBackup": volume_backup, "Err": ""}
+
+
+def snapshot_restore(snapshot_name, target_name=None):
     if "@" not in snapshot_name:
         # we're passing the name of the volume. Use the latest snapshot.
-        volume_name = snapshot_name
-        validate_volume_name(volume_name)
         snapshots = os.listdir(SNAPSHOTS_PATH)
-        snapshots = [s for s in snapshots if s.startswith(volume_name + "@")]
-        if not snapshots:
-            raise SnapshotNotFoundError(f"No snapshots found for volume '{volume_name}'")
-        snapshot_name = sorted(snapshots)[-1]
+        snapshot_name = get_last_snapshot(snapshot_name, snapshots)
 
     snapshot_path = join(SNAPSHOTS_PATH, snapshot_name)
     if not os.path.exists(snapshot_path):
@@ -661,22 +881,23 @@ def snapshot_restore(req):
 
     target_path = join(VOLUMES_PATH, target_name)
     volume = btrfs.Subvolume(target_path)
-    res = {"Err": ""}
 
     if not snapshot.exists():
         raise SnapshotNotFoundError(f"Snapshot '{snapshot_name}' is not a valid BTRFS subvolume")
 
+    volume_backup = None
     if volume.exists():
-        # backup and delete
-        timestamp = datetime.now().strftime(DTFORMAT)
-        stamped_name = f"{target_name}@{timestamp}"
-        stamped_path = join(SNAPSHOTS_PATH, stamped_name)
-        volume.snapshot(stamped_path, readonly=True)
-        res["VolumeBackup"] = stamped_name
+        if not volume.is_new():
+            # backup first before deleting
+            timestamp = datetime.now().strftime(DTFORMAT)
+            stamped_name = f"{target_name}@{timestamp}"
+            stamped_path = join(SNAPSHOTS_PATH, stamped_name)
+            volume.snapshot(stamped_path, readonly=True)
+            volume_backup = stamped_name
         volume.delete()
 
     snapshot.snapshot(target_path)
-    return res
+    return volume_backup
 
 
 @route("/VolumeDriver.Clone", ["POST"])
@@ -849,6 +1070,16 @@ def compute_purges(snapshots, pattern, now):
     # Example : [30, 70, 90, 150, 210, ..., 4000]
     snapshots_age = []
     valid_snapshots = []
+
+    # First exclude snaphosts which are needed to track sent snapshots
+    tracking_snapshots = set()
+    for s in snapshots:
+        if len(s.split("@")) == 3:
+            tracking_snapshots.add(s)
+            tracking_snapshots.add(s.rsplit("@", 1)[0])
+
+    snapshots = [s for s in snapshots if s not in tracking_snapshots]
+
     for s in snapshots:
         try:
             snapshots_age.append(

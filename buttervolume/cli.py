@@ -383,7 +383,7 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                         continue
                     log.info("Successfully snapshotted to %s", snap)
                     schedule_log[action][name] = now
-                if action.startswith("replicate:"):
+                if action.startswith("replicate:") or action.startswith("snapshot_sync:"):
                     if name in ReplicationInProgress:
                         log.warning(
                             f"Replication of {name} already in progress, skipping."

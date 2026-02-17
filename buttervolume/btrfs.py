@@ -131,6 +131,23 @@ class Subvolume:
             # Unexpected error - could indicate system issues
             return False
 
+    def is_same_as(self, snapshot_path):
+        """Check if this snapshot is the same as another snapshot (Can only be used to compare read-only snapshots)"""
+        # `head -n 2` will return the first two lines and exit immediately instead of waiting for a potentially long processing
+        bash_cmd = 'btrfs send --no-data -p "$1" "$2" | btrfs receive --dump | head -n 2'
+        cmd = ["bash", "-c", bash_cmd, "--", snapshot_path, self.path]
+
+        lines = run_safe(cmd, timeout=10)
+
+        # When there are no changes, it will only output one line
+        return len(lines.splitlines()) == 1
+
+    def is_new(self):
+        """Check if this subvolume is new"""
+        gen_at_creation = self.show()["Gen at creation"]
+        gen_now = self.show()["Generation"]
+        return gen_at_creation == gen_now
+
     @btrfs_operation(BtrfsSubvolumeError, "Failed to create snapshot", timeout=120)
     def snapshot(self, target, readonly=False):
         """Create a snapshot of this subvolume"""
