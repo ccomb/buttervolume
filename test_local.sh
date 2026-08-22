@@ -7,11 +7,21 @@ set -e
 # Create local test directories (adjust path as needed)
 LOCAL_TEST_DIR="${BUTTERVOLUME_TEST_DIR:-/tmp/buttervolume_test}"
 
-# Clean up any existing test directory completely
-if [ -d "$LOCAL_TEST_DIR" ]; then
-    echo "Cleaning up existing test directory..."
+# The tests leave BTRFS subvolumes behind, and rm cannot delete those: the
+# snapshots are read-only, and everything the tests made belongs to root.
+# Each one has to go through btrfs subvolume delete first.
+cleanup_test_dir() {
+    [ -d "$LOCAL_TEST_DIR" ] || return 0
+    echo "Cleaning up test directory: $LOCAL_TEST_DIR"
+    for subvolume in "$LOCAL_TEST_DIR"/*/*; do
+        if [ -d "$subvolume" ]; then
+            sudo btrfs subvolume delete "$subvolume" > /dev/null 2>&1 || true
+        fi
+    done
     sudo rm -rf "$LOCAL_TEST_DIR"
-fi
+}
+
+cleanup_test_dir
 
 mkdir -p "$LOCAL_TEST_DIR"/{volumes,snapshots,received}
 
@@ -59,6 +69,4 @@ else
     sudo -E .venv/bin/python -m pytest test.py -v
 fi
 
-# Cleanup
-echo "Cleaning up test directory: $LOCAL_TEST_DIR"
-rm -rf "$LOCAL_TEST_DIR"
+cleanup_test_dir
