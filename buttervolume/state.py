@@ -1,11 +1,19 @@
-import threading
 import json
+import logging
+import os
+import threading
 from pathlib import Path
 
+from buttervolume import btrfs
+
+log = logging.getLogger()
+
+
 class StateManager:
-    def __init__(self, state_file_path: Path):
+    def __init__(self, state_file_path: Path, volumes_path):
         self._lock = threading.Lock()
         self._state_file = state_file_path
+        self._volumes_path = volumes_path
         self._state = {}
         self.load()
 
@@ -45,9 +53,29 @@ class StateManager:
             if lock and lock.get("term", 0) > term:
                 return {"Err": f"A lock with a higher term {lock['term']} already exists"}
 
+            self_addr = self._state.get("self")
+            if not self_addr:
+                # Without knowing our own address we cannot tell whether we are
+                # the master being demoted, so granting the lock could leave two
+                # writable copies of the volume.
+                return {"Err": "This node does not know its own address, run cluster init"}
+
             self._state.setdefault("volumes", {}).setdefault(vol_name, {})
             self._state["volumes"][vol_name]["lock"] = {"term": term, "candidate": candidate}
             self._save_to_disk()
+
+            # If this node was the master, it must stop accepting writes now.
+            if current_state.get("active_node") == self_addr:
+                try:
+                    volume = btrfs.Subvolume(os.path.join(self._volumes_path, vol_name))
+                    volume.set_readonly(True)
+                    log.info("Demoted and switched to read-only for %s", vol_name)
+                except btrfs.BtrfsError as e:
+                    log.error("Could not make volume read-only: %s", e)
+                    self._state["volumes"][vol_name]["lock"] = lock
+                    self._save_to_disk()
+                    return {"Err": "Could not make volume read-only"}
+
             return {"Err": ""}
 
     def commit_state(self, vol_name, term, active_node):

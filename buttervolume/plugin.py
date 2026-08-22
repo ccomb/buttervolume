@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 from datetime import datetime
+from functools import wraps
 from os.path import basename, dirname, join
 from subprocess import PIPE, run
 
@@ -288,6 +289,7 @@ def setup_routes(app):
     def safe_handler(func):
         """Decorator that provides unified error handling for plugin operations"""
 
+        @wraps(func)
         def wrapper(*args, **kwargs):
             try:
                 result = func(*args, **kwargs)
@@ -359,10 +361,11 @@ def setup_routes(app):
         return receive_stdout.decode()
 
     def add_debug_log(handler):
-        def new_handler(*_, **kw):
+        @wraps(handler)
+        def new_handler(*_, **kwargs):
             req = json.loads(request.body.read().decode() or "{}")
             log.debug("Request: %s %s", request.path, req)
-            resp = json.dumps(handler(req, **kw))
+            resp = json.dumps(handler(req, **kwargs))
             log.debug("Response: %s", resp)
             return [resp.encode("utf-8")]  # Return as an iterable (list of bytes)
 
@@ -413,28 +416,34 @@ def setup_routes(app):
 
         return {"Err": ""}
 
-    def volumepath(name):
+    def volumepath(name, state_manager):
         path = join(VOLUMES_PATH, name)
         if not btrfs.Subvolume(path).exists():
             raise VolumeNotFoundError(f"Volume '{name}': no such volume")
+
+        # Application-level check for read-only state
+        volume_state = state_manager.get_volume_state(name)
+        if volume_state and volume_state.get("lock") is not None:
+            raise VolumeNotFoundError(f"Volume '{name}' is locked and read-only")
+
         return path
 
     @app.route("/VolumeDriver.Mount", ["POST"])
     @add_debug_log
     @safe_handler
-    def volume_mount(req):
+    def volume_mount(req, state_manager):
         name = req["Name"]
         validate_volume_name(name)
-        path = volumepath(name)
+        path = volumepath(name, state_manager)
         return {"Mountpoint": path, "Err": ""}
 
     @app.route("/VolumeDriver.Path", ["POST"])
     @add_debug_log
     @safe_handler
-    def volume_path(req):
+    def volume_path(req, state_manager):
         name = req["Name"]
         validate_volume_name(name)
-        path = volumepath(name)
+        path = volumepath(name, state_manager)
         return {"Mountpoint": path, "Err": ""}
 
     @app.route("/VolumeDriver.Unmount", ["POST"])
@@ -445,21 +454,19 @@ def setup_routes(app):
     @app.route("/VolumeDriver.Get", ["POST"])
     @add_debug_log
     @safe_handler
-    def volume_get(req):
+    def volume_get(req, state_manager):
         name = req["Name"]
         validate_volume_name(name)
-        path = volumepath(name)
+        path = volumepath(name, state_manager)
         return {"Volume": {"Name": name, "Mountpoint": path}, "Err": ""}
 
     @app.route("/VolumeDriver.Remove", ["POST"])
     @add_debug_log
     @safe_handler
-    def volume_remove(req):
+    def volume_remove(req, state_manager):
         name = req["Name"]
         validate_volume_name(name)
-        path = join(VOLUMES_PATH, name)
-        if not btrfs.Subvolume(path).exists():
-            raise VolumeNotFoundError(f"Volume '{name}': no such volume")
+        path = volumepath(name, state_manager)
         btrfs.Subvolume(path).delete()
         return {"Err": ""}
 

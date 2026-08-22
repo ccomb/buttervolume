@@ -140,6 +140,16 @@ class Subvolume:
         cmd.extend([self.path, target])
         return cmd
 
+    @btrfs_operation(BtrfsSubvolumeError, "Failed to set the read-only property", timeout=15)
+    def set_readonly(self, readonly):
+        """Make this subvolume read-only, or writable again
+
+        This is what actually stops a demoted master from being written to:
+        the kernel refuses the writes, whatever the application believes.
+        """
+        value = "true" if readonly else "false"
+        return ["btrfs", "property", "set", "-ts", self.path, "ro", value]
+
     @btrfs_operation(BtrfsSubvolumeError, "Failed to create subvolume", timeout=120)
     def _create_subvolume(self):
         """Create the BTRFS subvolume"""

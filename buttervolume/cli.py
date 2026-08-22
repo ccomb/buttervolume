@@ -1,5 +1,7 @@
 import argparse
+import configparser
 import csv
+import inspect
 import json
 import logging
 import os
@@ -90,14 +92,21 @@ class StateManagerPlugin:
         self.state_manager = state_manager
 
     def apply(self, fn, context):
+        # Hand the state manager only to the routes that ask for it by name.
+        # Injecting it into every route would break the ones that do not,
+        # which is most of them.
+        parameters = inspect.signature(context.callback).parameters
+        if self.name not in parameters:
+            return fn
+
         def wrapper(*args, **kwargs):
-            kwargs["state_manager"] = self.state_manager
+            kwargs[self.name] = self.state_manager
             return fn(*args, **kwargs)
 
         return wrapper
 
 
-class WaitressTlsAdapter(object):
+class WaitressTlsAdapter:
     """Adapter for Waitress to use TLS."""
 
     def __init__(self, certificate, private_key):
@@ -686,12 +695,12 @@ def run_cluster_server(app):
     log.info(f"Listening for cluster API requests on {host}:{port}...")
     if TLS_CERT_PATH and TLS_KEY_PATH:
         log.info("TLS enabled for cluster API")
-        server = serve(
+        serve(
             app, host=host, port=port, ssl_adapter=WaitressTlsAdapter(TLS_CERT_PATH, TLS_KEY_PATH)
         )
     else:
         log.warning("TLS not enabled for cluster API. Communication will be insecure.")
-        server = serve(app, host=host, port=port)
+        serve(app, host=host, port=port)
 
 def shutdown(event):
     log.info("Shutting down buttervolume...")
@@ -722,7 +731,7 @@ def run(_, test=False):
         except OSError as e:
             log.warning("Could not remove stale socket %s: %s", SOCKET, e)
 
-    state_manager = StateManager(Path(VOLUMES_PATH) / "cluster_state.json")
+    state_manager = StateManager(Path(VOLUMES_PATH) / "cluster_state.json", VOLUMES_PATH)
     event = threading.Event()
     threads = []
 
@@ -748,6 +757,7 @@ def run(_, test=False):
     if CLUSTER_SHARED_SECRET:
         cluster_api_app.install(AuthPlugin(CLUSTER_SHARED_SECRET))
     cluster_api_app.install(StateManagerPlugin(state_manager))
+    docker_plugin_app.install(StateManagerPlugin(state_manager))
     cluster_thread = threading.Thread(
         name="ClusterApiServer",
         target=run_cluster_server,
@@ -917,7 +927,7 @@ def cluster_init(args):
         config.write(f)
 
     # Create the initial state file
-    initial_state = {"peers": [args.self_addr], "volumes": {}}
+    initial_state = {"self": args.self_addr, "peers": [args.self_addr], "volumes": {}}
     with state_file.open("w") as f:
         json.dump(initial_state, f, indent=2)
 

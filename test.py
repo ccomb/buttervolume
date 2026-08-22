@@ -66,7 +66,12 @@ class TestCase(unittest.TestCase):
     def setUp(self):
         with open(SCHEDULE, "w") as f:
             f.truncate()
-        self.app = TestApp(cli.docker_plugin_app)
+        state_manager = cli.StateManager(
+            cli.Path(cli.VOLUMES_PATH) / "cluster_state.json", cli.VOLUMES_PATH
+        )
+        app = cli.docker_plugin_app
+        app.install(cli.StateManagerPlugin(state_manager))
+        self.app = TestApp(app)
         # Check that the target dir is BTRFS - skip tests if not
         # Set BUTTERVOLUME_SKIP_BTRFS_CHECK=1 to skip this check for testing
         if not os.environ.get("BUTTERVOLUME_SKIP_BTRFS_CHECK"):

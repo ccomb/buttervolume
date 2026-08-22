@@ -1,4 +1,6 @@
+import json
 import os
+
 from bottle import Bottle, request, response
 
 from buttervolume import btrfs
@@ -25,7 +27,7 @@ def receive_snapshot(vol_name):
     try:
         # The snapshot path is determined by the plugin's config, not user input
         receive_path = btrfs.SNAPSHOTS_PATH
-        p = btrfs.run_safe(
+        btrfs.run_safe(
             ["btrfs", "receive", receive_path],
             stdin=request.body,
             capture_output=True,
