@@ -13,12 +13,15 @@ LOCAL_TEST_DIR="${BUTTERVOLUME_TEST_DIR:-/tmp/buttervolume_test}"
 cleanup_test_dir() {
     [ -d "$LOCAL_TEST_DIR" ] || return 0
     echo "Cleaning up test directory: $LOCAL_TEST_DIR"
-    for subvolume in "$LOCAL_TEST_DIR"/*/*; do
-        if [ -d "$subvolume" ]; then
-            sudo btrfs subvolume delete "$subvolume" > /dev/null 2>&1 || true
-        fi
-    done
-    sudo rm -rf "$LOCAL_TEST_DIR"
+    # -depth walks children before parents, which is the order nested
+    # subvolumes have to be deleted in. Directories that are not subvolumes
+    # simply refuse, and rm takes care of them below.
+    sudo find "$LOCAL_TEST_DIR" -mindepth 1 -depth -type d \
+        -exec btrfs subvolume delete {} \; > /dev/null 2>&1 || true
+    sudo rm -rf "$LOCAL_TEST_DIR"/volumes "$LOCAL_TEST_DIR"/snapshots "$LOCAL_TEST_DIR"/received
+    # Left alone when it is a mount point, which is what the help text above
+    # tells people to set up.
+    rmdir "$LOCAL_TEST_DIR" 2> /dev/null || true
 }
 
 cleanup_test_dir
