@@ -4,11 +4,11 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 import uuid
 import weakref
-import threading
 from contextlib import suppress
 from datetime import datetime, timedelta
 from os.path import join
@@ -438,9 +438,9 @@ class TestCase(unittest.TestCase):
         # check we have two snapshots
         self.assertEqual(
             2,
-            len({
-                s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name) or s.startswith(name2)
-            }),
+            len(
+                {s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name) or s.startswith(name2)}
+            ),
         )
         # unschedule
         self.app.post(
@@ -460,9 +460,9 @@ class TestCase(unittest.TestCase):
         runjobs(SCHEDULE, test=True, schedule_log=schedule_log)
         self.assertEqual(
             3,
-            len({
-                s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name) or s.startswith(name2)
-            }),
+            len(
+                {s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name) or s.startswith(name2)}
+            ),
         )
         # unschedule the last job
         self.app.post(
@@ -509,15 +509,19 @@ class TestCase(unittest.TestCase):
         runjobs(SCHEDULE, test=True, schedule_log=schedule_log)
         self.assertEqual(
             2,
-            len({
-                s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name) or s.startswith(name)
-            }),
+            len(
+                {s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name) or s.startswith(name)}
+            ),
         )
         self.assertEqual(
             1,
-            len({
-                s for s in os.listdir(TEST_REMOTE_PATH) if s.startswith(name) or s.startswith(name)
-            }),
+            len(
+                {
+                    s
+                    for s in os.listdir(TEST_REMOTE_PATH)
+                    if s.startswith(name) or s.startswith(name)
+                }
+            ),
         )
         # unschedule the last job
         self.app.post(
@@ -799,11 +803,13 @@ class TestCase(unittest.TestCase):
                 f.write("test sync")
             self.app.post(
                 "/VolumeDriver.Volume.Sync",
-                json.dumps({
-                    "Volumes": [name],
-                    "Hosts": ["localhost"],
-                    "Test": True,
-                }),
+                json.dumps(
+                    {
+                        "Volumes": [name],
+                        "Hosts": ["localhost"],
+                        "Test": True,
+                    }
+                ),
             )
             with open(join(path, "foobar")) as x:
                 self.assertEqual(x.read(), "test sync")
@@ -812,11 +818,13 @@ class TestCase(unittest.TestCase):
                 f.write("foobar")
             self.app.post(
                 "/VolumeDriver.Volume.Sync",
-                json.dumps({
-                    "Volumes": [name],
-                    "Hosts": ["localhost"],
-                    "Test": True,
-                }),
+                json.dumps(
+                    {
+                        "Volumes": [name],
+                        "Hosts": ["localhost"],
+                        "Test": True,
+                    }
+                ),
             )
             with open(join(path, "foobar")) as x:
                 self.assertEqual(x.read(), "test sync")
@@ -842,11 +850,13 @@ class TestCase(unittest.TestCase):
         # responding we should synchronise other hosts
         self.app.post(
             "/VolumeDriver.Schedule",
-            json.dumps({
-                "Name": name,
-                "Action": "synchronize:localhost,wronghost.mlf",
-                "Timer": 120,
-            }),
+            json.dumps(
+                {
+                    "Name": name,
+                    "Action": "synchronize:localhost,wronghost.mlf",
+                    "Timer": 120,
+                }
+            ),
         )
         # also replicate a non existing volume
         self.app.post(
@@ -876,11 +886,13 @@ class TestCase(unittest.TestCase):
         )
         self.app.post(
             "/VolumeDriver.Schedule",
-            json.dumps({
-                "Name": name,
-                "Action": "synchronize:localhost,wronghost.mlf",
-                "Timer": 0,
-            }),
+            json.dumps(
+                {
+                    "Name": name,
+                    "Action": "synchronize:localhost,wronghost.mlf",
+                    "Timer": 0,
+                }
+            ),
         )
 
     def test_init_file(self):
