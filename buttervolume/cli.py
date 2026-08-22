@@ -385,9 +385,7 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                     schedule_log[action][name] = now
                 if action.startswith("replicate:"):
                     if name in ReplicationInProgress:
-                        log.warning(
-                            f"Replication of {name} already in progress, skipping."
-                        )
+                        log.warning(f"Replication of {name} already in progress, skipping.")
                         continue
                     _, host = action.split(":")
                     log.info("Starting scheduled replication of %s", name)
