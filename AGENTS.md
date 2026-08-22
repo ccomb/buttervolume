@@ -8,11 +8,14 @@ subvolumes: snapshot, restore, clone, replicate. Python, Bottle, argparse.
 - `README.rst` is the user manual: install, CLI usage, configuration, volume
   migration. Never duplicate it here; fix it there when it is wrong.
 - `buttervolume/plugin.py`: the Docker Volume Plugin HTTP API. Every endpoint is
-  one `@app.route("/VolumeDriver.*")` in `setup_routes`, and that function is the
-  authoritative route list.
-- `buttervolume/btrfs.py`: the only place that shells out to `btrfs`.
-- `buttervolume/cli.py`: the argparse commands, the scheduler thread and the
-  Bottle application the plugin serves on its unix socket.
+  a module-level `@route(...)` decorator there, and that list of decorators is
+  the authoritative route list.
+- `buttervolume/btrfs.py`: the subvolume operations, and `run_safe`, the guarded
+  way to call the `btrfs` command. One path escapes it and needs the same care:
+  `run_btrfs_send_receive` in `plugin.py` builds its own send and receive to
+  pipe them over SSH.
+- `buttervolume/cli.py`: the argparse commands, the scheduler thread, and the
+  waitress server that answers Docker on the unix socket.
 - `test.py`: the whole test suite, driven through `webtest` against the app.
 - `CHANGES.rst`: the changelog, one entry per user-visible change.
 

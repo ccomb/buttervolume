@@ -14,3 +14,4 @@ rootfs
 __pycache__/
 *.db
 *.log
+.claude/worktrees/
