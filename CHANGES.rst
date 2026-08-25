@@ -4,6 +4,8 @@ CHANGELOG
 3.13 (unreleased)
 *****************
 
+- The chattr call enabling compression no longer goes through a shell with the
+  volume path interpolated in the command line.
 - Fixed the purge tests, which passed or failed depending on how long they took
   to run.
 - Fixed the tests: create a BTRFS filesystems in a loop device if there is no BTRFS during tests.

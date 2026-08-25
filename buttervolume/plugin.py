@@ -282,7 +282,7 @@ def volume_create(req):
     # Enable compression if requested
     if compression and compression != "false":
         try:
-            run(f'chattr +c "{volpath}"', shell=True, check=True)
+            btrfs.run_safe(["chattr", "+c", volpath], timeout=10)
             log.info(f"Enabled compression for volume {name}")
         except Exception as e:
             log.warning(f"Could not enable compression for volume {name}: {e}")
