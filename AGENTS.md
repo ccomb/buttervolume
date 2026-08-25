@@ -9,7 +9,9 @@ subvolumes: snapshot, restore, clone, replicate. Python, Bottle, argparse.
   migration. Never duplicate it here; fix it there when it is wrong.
 - `buttervolume/plugin.py`: the Docker Volume Plugin HTTP API. Every endpoint is
   a module-level `@route(...)` decorator there, and that list of decorators is
-  the authoritative route list.
+  the authoritative route list. `@route` is defined there too, and is not
+  Bottle's: it decodes the request, logs it, and turns any failure into the
+  `Err` field of a 200 answer, which is the only shape a client can read.
 - `buttervolume/btrfs.py`: the subvolume operations, and `run_safe`, the guarded
   way to call the `btrfs` command. One path escapes it and needs the same care:
   `run_btrfs_send_receive` in `plugin.py` builds its own send and receive to
