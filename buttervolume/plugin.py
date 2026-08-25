@@ -145,6 +145,30 @@ def validate_volume_name(name):
     return name
 
 
+def validate_snapshot_name(name):
+    """Validate a snapshot name: volume@timestamp, plus @host for sent snapshots.
+
+    Snapshot names come from Docker or from a remote host and end up in a
+    path and in a shell command, so they get the same care as volume names.
+    """
+    if not name:
+        raise ValidationError("Snapshot name cannot be empty")
+
+    if len(name) > 255:
+        raise ValidationError("Snapshot name too long")
+
+    parts = name.split("@")
+    if len(parts) not in (2, 3):
+        raise ValidationError("Invalid snapshot name format")
+
+    validate_volume_name(parts[0])
+    for part in parts[1:]:
+        if not part or not re.match(r"^[a-zA-Z0-9.:_-]+$", part):
+            raise ValidationError("Snapshot name contains invalid characters")
+
+    return name
+
+
 def validate_hostname(hostname):
     """Validate hostname for SSH operations"""
     if not hostname:
@@ -443,7 +467,7 @@ def snapshot_send(req):
 
     # Validate inputs
     try:
-        validate_volume_name(snapshot_name.split("@")[0])  # Validate base volume name
+        validate_snapshot_name(snapshot_name)
         validate_hostname(remote_host)
     except ValidationError as e:
         return {"Err": str(e)}
@@ -553,10 +577,7 @@ def snapshot_sublist(_, name=""):
 @safe_handler
 def snapshot_delete(req):
     name = req["Name"]
-
-    # Basic validation of snapshot name format
-    if "@" not in name:
-        raise ValidationError("Invalid snapshot name format")
+    validate_snapshot_name(name)
 
     path = join(SNAPSHOTS_PATH, name)
     if not os.path.exists(path):
@@ -652,6 +673,8 @@ def snapshot_restore(req):
         if not snapshots:
             raise SnapshotNotFoundError(f"No snapshots found for volume '{volume_name}'")
         snapshot_name = sorted(snapshots)[-1]
+    else:
+        validate_snapshot_name(snapshot_name)
 
     snapshot_path = join(SNAPSHOTS_PATH, snapshot_name)
     if not os.path.exists(snapshot_path):

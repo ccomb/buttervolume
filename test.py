@@ -180,6 +180,34 @@ class TestCase(unittest.TestCase):
             json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 0}),
         )
 
+    def test_snapshot_names_are_validated(self):
+        """Snapshot names from the API cannot reach outside the snapshots directory"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        snap = jsonloads(self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body)[
+            "Snapshot"
+        ]
+        # a traversal through an existing snapshot resolves to the volume
+        # itself: it must be rejected, not deleted
+        evil = f"{snap}/../../volumes/{name}"
+        resp = jsonloads(
+            self.app.post("/VolumeDriver.Snapshot.Remove", json.dumps({"Name": evil})).body
+        )
+        self.assertTrue(resp["Err"])
+        self.assertTrue(os.path.exists(join(VOLUMES_PATH, name)))
+        # malformed names are rejected by the three endpoints taking a snapshot name
+        for bad in ("@", "foo@", "a@b@c@d", "foo@$(reboot)", "foo@back`tick"):
+            for urlpath, param in (
+                ("/VolumeDriver.Snapshot.Remove", {"Name": bad}),
+                ("/VolumeDriver.Snapshot.Send", {"Name": bad, "Host": "localhost"}),
+                ("/VolumeDriver.Snapshot.Restore", {"Name": bad}),
+            ):
+                resp = jsonloads(self.app.post(urlpath, json.dumps(param)).body)
+                self.assertTrue(resp["Err"], f"{urlpath} accepted {bad!r}")
+        # cleanup
+        self.app.post("/VolumeDriver.Snapshot.Remove", json.dumps({"Name": snap}))
+        self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name}))
+
     def create_a_volume_with_a_file(self, name):
         # create a volume with a file
         path = join(VOLUMES_PATH, name)
