@@ -6,6 +6,11 @@ CHANGELOG
 
 - The chattr call enabling compression no longer goes through a shell with the
   volume path interpolated in the command line.
+- Snapshot names received through the API are now validated like volume names:
+  a name containing a path traversal or shell characters is rejected instead
+  of reaching the filesystem and the btrfs command. A ``DTFORMAT`` producing a
+  name that this validation would reject is refused at snapshot time, instead
+  of creating a snapshot no endpoint could name again.
 - Fixed the purge tests, which passed or failed depending on how long they took
   to run.
 - Fixed the tests: create a BTRFS filesystems in a loop device if there is no BTRFS during tests.

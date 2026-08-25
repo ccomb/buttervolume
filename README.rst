@@ -294,7 +294,9 @@ You can configure the following variables:
     * ``RUNPATH``: the path of the docker run directory (/run/docker)
     * ``SOCKET``: the path of the unix socket where buttervolume listens
     * ``TIMER``: the number of seconds between two runs of the scheduler jobs
-    * ``DTFORMAT``: the format of the datetime in the logs
+    * ``DTFORMAT``: the format of the datetime in the logs and in the snapshot
+      names. As a snapshot name has to remain usable in a path and in a command,
+      the format may only produce letters, digits, dot, colon, underscore and dash
     * ``LOGLEVEL``: the Python log level (INFO, DEBUG, etc.)
 
 The configuration can be done in this order of priority:
