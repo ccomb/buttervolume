@@ -15,46 +15,16 @@ from subprocess import run
 from bottle import request
 from bottle import route as bottle_route
 
-from buttervolume import btrfs
+from buttervolume import (
+    ButtervolumeError,  # noqa: F401  (re-exported: the API answers with these)
+    ReplicationError,
+    ReplicationTimeoutError,
+    SnapshotNotFoundError,
+    ValidationError,
+    VolumeNotFoundError,
+    btrfs,
+)
 from buttervolume.btrfs import BtrfsError
-
-
-# Custom exceptions for better error handling
-class ButtervolumeError(Exception):
-    """Base exception for Buttervolume errors"""
-
-    pass
-
-
-class VolumeNotFoundError(ButtervolumeError):
-    """Raised when a volume is not found"""
-
-    pass
-
-
-class SnapshotNotFoundError(ButtervolumeError):
-    """Raised when a snapshot is not found"""
-
-    pass
-
-
-class ValidationError(ButtervolumeError):
-    """Raised when input validation fails"""
-
-    pass
-
-
-class ReplicationError(ButtervolumeError):
-    """Raised when replication fails"""
-
-    pass
-
-
-class ReplicationTimeoutError(ReplicationError):
-    """Raised when a replication is killed for taking too long"""
-
-    pass
-
 
 config = configparser.ConfigParser()
 config.read("/etc/buttervolume/config.ini")
