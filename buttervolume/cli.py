@@ -315,10 +315,9 @@ def remove(args, test=False):
         resp = TestApp(app).post(urlpath, param)
     else:
         resp = Session().post(f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}", param)
-    res = get_from(resp, "")
-    if res:
-        print(res)
-    return res
+    # the endpoint answers with an empty payload, so the only thing to report
+    # is whether the deletion happened: get_from already logged the error.
+    return get_from(resp, "") is not False
 
 
 def purge(args, test=False):
@@ -407,8 +406,13 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                         log.warning("Replication failed: %s", e)
                         # remove snapshot that was created for the failed replication
                         if snap:
-                            remove(Arg(name=[snap]), test=test)
-                            log.info("Removed snapshot %s for failed replication", snap)
+                            if remove(Arg(name=[snap]), test=test):
+                                log.info("Removed snapshot %s for failed replication", snap)
+                            else:
+                                log.warning(
+                                    "Could not remove snapshot %s of the failed replication",
+                                    snap,
+                                )
                     finally:
                         ReplicationInProgress.remove(name)
                 if action.startswith("purge:"):
