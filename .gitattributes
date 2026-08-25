@@ -1,0 +1,4 @@
+# The changelog only ever grows by a line at the top, and every branch adds
+# one there. Keeping both sides is always the right answer, and saves a
+# conflict on every single merge.
+CHANGES.rst merge=union
