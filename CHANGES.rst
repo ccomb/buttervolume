@@ -11,6 +11,8 @@ CHANGELOG
   of reaching the filesystem and the btrfs command. A ``DTFORMAT`` producing a
   name that this validation would reject is refused at snapshot time, instead
   of creating a snapshot no endpoint could name again.
+- Fixed the cleanup of the snapshot created for a failed scheduled replication:
+  it crashed instead of deleting the snapshot, leaving it behind.
 - Fixed the purge tests, which passed or failed depending on how long they took
   to run.
 - Fixed the tests: create a BTRFS filesystems in a loop device if there is no BTRFS during tests.

@@ -229,6 +229,29 @@ class TestCase(unittest.TestCase):
         self.assertEqual([s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")], [])
         self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name}))
 
+    def test_replication_cleanup_on_failure(self):
+        """A failed replication deletes the snapshot it created for the occasion"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        self.app.post(
+            "/VolumeDriver.Schedule",
+            json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 1}),
+        )
+        with patch("buttervolume.cli.send") as mock_send:
+            mock_send.side_effect = Exception("replication failed")
+            runjobs(SCHEDULE, True)
+        mock_send.assert_called_once()
+        # the snapshot created for the failed replication was removed
+        snapshots = [s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")]
+        self.assertEqual(snapshots, [])
+        # the lock was released
+        self.assertNotIn(name, cli.ReplicationInProgress)
+        # unschedule
+        self.app.post(
+            "/VolumeDriver.Schedule",
+            json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 0}),
+        )
+
     def create_a_volume_with_a_file(self, name):
         # create a volume with a file
         path = join(VOLUMES_PATH, name)

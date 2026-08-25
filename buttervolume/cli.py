@@ -308,10 +308,13 @@ def sync(args, test=False):
     return res
 
 
-def remove(args):
+def remove(args, test=False):
     urlpath = "/VolumeDriver.Snapshot.Remove"
     param = json.dumps({"Name": args.name[0]})
-    resp = Session().post((f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}"), param)
+    if test:
+        resp = TestApp(app).post(urlpath, param)
+    else:
+        resp = Session().post(f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}", param)
     res = get_from(resp, "")
     if res:
         print(res)
@@ -389,6 +392,7 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                         continue
                     _, host = action.split(":")
                     log.info("Starting scheduled replication of %s", name)
+                    snap = None
                     try:
                         ReplicationInProgress.add(name)
                         snap = snapshot(Arg(name=[name]), test=test)
