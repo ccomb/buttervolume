@@ -1,87 +1,49 @@
 import contextlib
 import os
-from subprocess import PIPE, CalledProcessError, TimeoutExpired
+from subprocess import CalledProcessError, TimeoutExpired
 from subprocess import run as _run
 
+# How long each command may legitimately take, in seconds
+SHOW_TIMEOUT = 15
+SNAPSHOT_TIMEOUT = 120
+CREATE_TIMEOUT = 120
+DELETE_TIMEOUT = 300
+CHATTR_TIMEOUT = 10
+LABEL_TIMEOUT = 15
 
-# Custom exceptions for BTRFS operations
+
 class BtrfsError(Exception):
     """Base exception for BTRFS operations"""
-
-    pass
 
 
 class BtrfsSubvolumeError(BtrfsError):
     """Raised when BTRFS subvolume operations fail"""
 
-    pass
 
+def run_safe(cmd, timeout, error=BtrfsError):
+    """Run a command without a shell and turn any failure into a typed error.
 
-class BtrfsFilesystemError(BtrfsError):
-    """Raised when BTRFS filesystem operations fail"""
-
-    pass
-
-
-class InvalidPathError(BtrfsError):
-    """Raised when path validation fails"""
-
-    pass
-
-
-def btrfs_operation(error_type, error_msg, timeout=60):
-    """Decorator that runs BTRFS commands with timeout and converts exceptions to specific types."""
-
-    def decorator(func):
-        def wrapper(self, *args, **kwargs):
-            # Call the function to get the command
-            cmd_list = func(self, *args, **kwargs)
-
-            try:
-                return _run(
-                    cmd_list,
-                    shell=False,
-                    check=True,
-                    capture_output=True,
-                    timeout=timeout,
-                ).stdout.decode()
-            except CalledProcessError as e:
-                cmd_str = " ".join(cmd_list)
-                stderr_output = e.stderr.decode() if e.stderr else "No error output"
-                raise error_type(
-                    f"{error_msg}: BTRFS command failed: {cmd_str}\nStderr: {stderr_output}"
-                ) from None
-            except TimeoutExpired:
-                cmd_str = " ".join(cmd_list)
-                raise error_type(
-                    f"{error_msg}: BTRFS command timed out after {timeout}s: {cmd_str}"
-                ) from None
-            except Exception as e:
-                raise error_type(f"{error_msg} - unexpected error: {str(e)}") from None
-
-        return wrapper
-
-    return decorator
-
-
-def run_safe(cmd_list, check=True, stdout=PIPE, stderr=PIPE, timeout=60):
-    """Simple run_safe for basic operations without error type conversion"""
+    :param timeout: how long the command may run, in seconds. No default:
+                    every caller states the delay it expects.
+    :param error: the exception class raised on failure.
+    :return: the standard output, decoded
+    """
     try:
         return _run(
-            cmd_list,
+            cmd,
             shell=False,
-            check=check,
-            stdout=stdout,
-            stderr=stderr,
+            check=True,
+            capture_output=True,
             timeout=timeout,
         ).stdout.decode()
     except CalledProcessError as e:
-        cmd_str = " ".join(cmd_list)
-        stderr_output = e.stderr.decode() if e.stderr else "No error output"
-        raise BtrfsError(f"BTRFS command failed: {cmd_str}\nStderr: {stderr_output}") from None
-    except TimeoutExpired:
-        cmd_str = " ".join(cmd_list)
-        raise BtrfsError(f"BTRFS command timed out after {timeout}s: {cmd_str}") from None
+        stderr = e.stderr.decode() if e.stderr else "No error output"
+        raise error(f"Command failed: {' '.join(cmd)}\nStderr: {stderr}") from e
+    except TimeoutExpired as e:
+        raise error(f"Command timed out after {timeout}s: {' '.join(cmd)}") from e
+    except OSError as e:
+        # The command could not even be started: missing binary, no permission
+        raise error(f"Command could not be run: {' '.join(cmd)}\n{e}") from e
 
 
 class Subvolume:
@@ -93,7 +55,11 @@ class Subvolume:
 
     def show(self):
         """Parse btrfs subvolume show output"""
-        raw = run_safe(["btrfs", "subvolume", "show", self.path], timeout=15)
+        raw = run_safe(
+            ["btrfs", "subvolume", "show", self.path],
+            timeout=SHOW_TIMEOUT,
+            error=BtrfsSubvolumeError,
+        )
         lines = raw.split("\n")
 
         if len(lines) < 13:
@@ -118,8 +84,6 @@ class Subvolume:
 
     def exists(self):
         """Check if this path is a valid BTRFS subvolume"""
-        if not os.path.exists(self.path):
-            return False
         if not os.path.isdir(self.path):
             return False
         try:
@@ -127,57 +91,38 @@ class Subvolume:
             return True
         except BtrfsError:
             return False
-        except Exception:
-            # Unexpected error - could indicate system issues
-            return False
 
-    @btrfs_operation(BtrfsSubvolumeError, "Failed to create snapshot", timeout=120)
     def snapshot(self, target, readonly=False):
         """Create a snapshot of this subvolume"""
         cmd = ["btrfs", "subvolume", "snapshot"]
         if readonly:
             cmd.append("-r")
         cmd.extend([self.path, target])
-        return cmd
-
-    @btrfs_operation(BtrfsSubvolumeError, "Failed to create subvolume", timeout=120)
-    def _create_subvolume(self):
-        """Create the BTRFS subvolume"""
-        return ["btrfs", "subvolume", "create", self.path]
+        return run_safe(cmd, timeout=SNAPSHOT_TIMEOUT, error=BtrfsSubvolumeError)
 
     def create(self, cow=False):
         """Create a new BTRFS subvolume"""
-        out = self._create_subvolume()
+        out = run_safe(
+            ["btrfs", "subvolume", "create", self.path],
+            timeout=CREATE_TIMEOUT,
+            error=BtrfsSubvolumeError,
+        )
         if not cow:
             with contextlib.suppress(BtrfsError):
-                run_safe(["chattr", "+C", self.path], timeout=10)
+                run_safe(["chattr", "+C", self.path], timeout=CHATTR_TIMEOUT)
                 # chattr failure is not critical, subvolume was created successfully
         return out
 
-    @btrfs_operation(BtrfsSubvolumeError, "Failed to delete subvolume", timeout=300)
-    def _delete_subvolume(self):
-        """Delete the BTRFS subvolume"""
-        return ["btrfs", "subvolume", "delete", self.path]
-
-    def delete(self, check=True):
+    def delete(self):
         """Delete this BTRFS subvolume
 
-        :param check: if True, in case btrfs subvolume fails (exit code != 0)
-                      an exception will be raised
         :return: btrfs output string
         """
-        if check:
-            return self._delete_subvolume()
-        else:
-            # Silent failure mode
-            try:
-                return run_safe(
-                    ["btrfs", "subvolume", "delete", self.path],
-                    check=False,
-                    timeout=300,
-                )
-            except Exception:
-                return ""
+        return run_safe(
+            ["btrfs", "subvolume", "delete", self.path],
+            timeout=DELETE_TIMEOUT,
+            error=BtrfsSubvolumeError,
+        )
 
 
 class Filesystem:
@@ -185,7 +130,7 @@ class Filesystem:
         self.path = path
 
     def label(self, label=None):
-        if label is None:
-            return run_safe(["btrfs", "filesystem", "label", self.path], timeout=15)
-        else:
-            return run_safe(["btrfs", "filesystem", "label", self.path, label], timeout=15)
+        cmd = ["btrfs", "filesystem", "label", self.path]
+        if label is not None:
+            cmd.append(label)
+        return run_safe(cmd, timeout=LABEL_TIMEOUT)

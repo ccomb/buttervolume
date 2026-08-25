@@ -23,6 +23,9 @@ CHANGELOG
 - Allow using volumes created with legacy plugin anybox/buttervolume (fix #52)
 - Fixed deletion of old sent snapshots
 - Added support for compression (fix #36)
+- A failing BTRFS command is now always reported the same way, naming the command
+  and keeping the original error. Deleting a subvolume no longer has a silent
+  failure mode.
 
 3.12 (2024-11-05)
 *****************

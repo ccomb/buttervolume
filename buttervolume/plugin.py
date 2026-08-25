@@ -7,16 +7,12 @@ import re
 import subprocess
 from datetime import datetime
 from os.path import basename, dirname, join
-from subprocess import PIPE, run
+from subprocess import run
 
 from bottle import request, route
 
 from buttervolume import btrfs
-from buttervolume.btrfs import (
-    BtrfsError,
-    BtrfsFilesystemError,
-    BtrfsSubvolumeError,
-)
+from buttervolume.btrfs import BtrfsError
 
 
 # Custom exceptions for better error handling
@@ -93,6 +89,9 @@ if not os.path.exists(USOCKET):
             continue  # Try next driver name
 
 TIMER = int(getconfig(config, "TIMER", 60))
+# How long each external command may legitimately take, in seconds
+SYNC_TIMEOUT = 30
+RSYNC_TIMEOUT = 600
 DTFORMAT = getconfig(config, "DTFORMAT", "%Y-%m-%dT%H:%M:%S.%f")
 LOGLEVEL = getattr(logging, getconfig(config, "LOGLEVEL", "INFO"))
 
@@ -206,8 +205,6 @@ def safe_handler(func):
             VolumeNotFoundError,
             SnapshotNotFoundError,
             ReplicationError,
-            BtrfsSubvolumeError,
-            BtrfsFilesystemError,
             BtrfsError,
         ) as e:
             return {"Err": str(e)}
@@ -228,7 +225,7 @@ def run_btrfs_send_receive(
     validate_hostname(remote_host)
 
     # First sync the filesystem
-    btrfs.run_safe(["btrfs", "filesystem", "sync", SNAPSHOTS_PATH], timeout=30)
+    btrfs.run_safe(["btrfs", "filesystem", "sync", SNAPSHOTS_PATH], timeout=SYNC_TIMEOUT)
 
     # Build btrfs send command
     send_cmd = ["btrfs", "send"]
@@ -445,8 +442,7 @@ def volume_sync(req):
             ]
             log.debug("Running %r", cmd)
             try:
-                # 10 min timeout for rsync
-                btrfs.run_safe(cmd, check=True, stdout=PIPE, stderr=PIPE, timeout=600)
+                btrfs.run_safe(cmd, timeout=RSYNC_TIMEOUT)
             except Exception as ex:
                 err = getattr(ex, "stderr", str(ex))
                 if isinstance(err, bytes):
