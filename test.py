@@ -252,6 +252,15 @@ class TestCase(unittest.TestCase):
             json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 0}),
         )
 
+    def test_send_error_reports_send_stderr(self):
+        """A failed send/receive reports the error of the send side too"""
+        missing = join(SNAPSHOTS_PATH, PREFIX_TEST_VOLUME + "missing@snap")
+        with self.assertRaises(plugin.ReplicationError) as ctx:
+            # the send fails (missing snapshot) and ssh fails (port 1 refused):
+            # the exception must carry the send side error, which names the path
+            plugin.run_btrfs_send_receive(missing, "localhost", SNAPSHOTS_PATH, port="1")
+        self.assertIn(missing, str(ctx.exception))
+
     def create_a_volume_with_a_file(self, name):
         # create a volume with a file
         path = join(VOLUMES_PATH, name)

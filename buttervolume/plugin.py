@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import subprocess
+import tempfile
 from datetime import datetime
 from os.path import basename, dirname, join
 from subprocess import run
@@ -92,6 +93,8 @@ TIMER = int(getconfig(config, "TIMER", 60))
 # How long each external command may legitimately take, in seconds
 SYNC_TIMEOUT = 30
 RSYNC_TIMEOUT = 600
+# The send crosses the network, so its limit is configurable like the rest
+SEND_TIMEOUT = int(getconfig(config, "SEND_TIMEOUT", 600))
 DTFORMAT = getconfig(config, "DTFORMAT", "%Y-%m-%dT%H:%M:%S.%f")
 LOGLEVEL = getattr(logging, getconfig(config, "LOGLEVEL", "INFO"))
 
@@ -244,24 +247,37 @@ def run_btrfs_send_receive(
         f"btrfs receive {remote_snapshots}",
     ]
 
-    # Execute send | ssh receive using subprocess
-
-    send_proc = subprocess.Popen(send_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    receive_proc = subprocess.Popen(
-        ssh_cmd, stdin=send_proc.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-    )
-
-    send_proc.stdout.close()  # Allow send_proc to receive a SIGPIPE if receive_proc exits
-
-    receive_stdout, receive_stderr = receive_proc.communicate()
-    send_proc.wait()
-
-    if send_proc.returncode != 0 or receive_proc.returncode != 0:
-        error_details = receive_stderr.decode()
-        raise ReplicationError(
-            f"btrfs send/receive failed (send: {send_proc.returncode}, "
-            f"receive: {receive_proc.returncode}): {error_details}"
+    # Execute send | ssh receive using subprocess.
+    # The send stderr goes to a temporary file rather than a pipe: nobody can
+    # read that pipe while waiting for the receive side, and a verbose failure
+    # would fill it and deadlock both processes.
+    with tempfile.TemporaryFile() as send_stderr_file:
+        send_proc = subprocess.Popen(send_cmd, stdout=subprocess.PIPE, stderr=send_stderr_file)
+        receive_proc = subprocess.Popen(
+            ssh_cmd, stdin=send_proc.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
+
+        send_proc.stdout.close()  # Allow send_proc to receive a SIGPIPE if receive_proc exits
+
+        try:
+            receive_stdout, receive_stderr = receive_proc.communicate(timeout=SEND_TIMEOUT)
+            send_proc.wait(timeout=SEND_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            send_proc.kill()
+            receive_proc.kill()
+            send_proc.wait()
+            receive_proc.wait()
+            raise ReplicationError(
+                f"btrfs send/receive to {remote_host} timed out after {SEND_TIMEOUT}s"
+            ) from None
+
+        if send_proc.returncode != 0 or receive_proc.returncode != 0:
+            send_stderr_file.seek(0)
+            raise ReplicationError(
+                f"btrfs send/receive failed (send: {send_proc.returncode}, "
+                f"receive: {receive_proc.returncode}): "
+                f"{send_stderr_file.read().decode()} {receive_stderr.decode()}"
+            )
 
     return receive_stdout.decode()
 

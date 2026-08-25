@@ -294,6 +294,7 @@ You can configure the following variables:
     * ``RUNPATH``: the path of the docker run directory (/run/docker)
     * ``SOCKET``: the path of the unix socket where buttervolume listens
     * ``TIMER``: the number of seconds between two runs of the scheduler jobs
+    * ``SEND_TIMEOUT``: the number of seconds a snapshot send to another node may take before being killed
     * ``DTFORMAT``: the format of the datetime in the logs and in the snapshot
       names. As a snapshot name has to remain usable in a path and in a command,
       the format may only produce letters, digits, dot, colon, underscore and dash
@@ -321,6 +322,7 @@ If none of this is configured, the following default values are used:
     * ``RUNPATH = /run/docker``
     * ``SOCKET = $RUNPATH/plugins/btrfs.sock`` # only if run manually
     * ``TIMER = 60``
+    * ``SEND_TIMEOUT = 600``
     * ``DTFORMAT = %Y-%m-%dT%H:%M:%S.%f``
     * ``LOGLEVEL = INFO``
 
