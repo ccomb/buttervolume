@@ -601,7 +601,13 @@ class TestCase(unittest.TestCase):
 
     def create_20_hourly_snapshots(self, name):
         path = join(VOLUMES_PATH, name)
-        hours = [(datetime.now() - timedelta(hours=h)).strftime(DTFORMAT) for h in range(20)]
+        # Five minutes short of the round hour: a snapshot exactly as old as a
+        # purge threshold falls on either side of it depending on how long the
+        # test itself takes, which made the expected counts below a coin flip.
+        hours = [
+            (datetime.now() - timedelta(hours=h) + timedelta(minutes=5)).strftime(DTFORMAT)
+            for h in range(20)
+        ]
         for h in hours:
             run(
                 f"btrfs subvolume snapshot {path} {join(SNAPSHOTS_PATH, name)}@{h}",
@@ -671,8 +677,8 @@ class TestCase(unittest.TestCase):
             json.dumps({"Name": name, "Pattern": "2h:4h:8h:16h"}),
         )
         self.assertEqual(jsonloads(resp.body), {"Err": ""})
-        # check we deleted 15 snapshots
-        self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps - 15)
+        # check we deleted 14 snapshots
+        self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps - 14)
 
         cleanup_snapshots()
         self.create_20_hourly_snapshots(name)
@@ -702,8 +708,8 @@ class TestCase(unittest.TestCase):
             json.dumps({"Name": name, "Pattern": "60m:120m:180m:240m:300m"}),
         )
         self.assertEqual(jsonloads(resp.body), {"Err": ""})
-        # check we deleted 18 snapshots
-        self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps - 18)
+        # check we deleted 15 snapshots
+        self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps - 15)
         cleanup_snapshots()
         self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name}))
 
