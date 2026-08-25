@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from datetime import datetime
 from os.path import basename, dirname, join
 from subprocess import run
@@ -43,6 +44,12 @@ class ValidationError(ButtervolumeError):
 
 class ReplicationError(ButtervolumeError):
     """Raised when replication fails"""
+
+    pass
+
+
+class ReplicationTimeoutError(ReplicationError):
+    """Raised when a replication is killed for taking too long"""
 
     pass
 
@@ -259,16 +266,21 @@ def run_btrfs_send_receive(
 
         send_proc.stdout.close()  # Allow send_proc to receive a SIGPIPE if receive_proc exits
 
+        # one deadline for the two waits, so the whole transfer really is
+        # bounded by SEND_TIMEOUT and not by twice that
+        deadline = time.monotonic() + SEND_TIMEOUT
         try:
             receive_stdout, receive_stderr = receive_proc.communicate(timeout=SEND_TIMEOUT)
-            send_proc.wait(timeout=SEND_TIMEOUT)
+            send_proc.wait(timeout=max(0.0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
             send_proc.kill()
             receive_proc.kill()
             send_proc.wait()
             receive_proc.wait()
-            raise ReplicationError(
-                f"btrfs send/receive to {remote_host} timed out after {SEND_TIMEOUT}s"
+            send_stderr_file.seek(0)
+            raise ReplicationTimeoutError(
+                f"btrfs send/receive to {remote_host} timed out after {SEND_TIMEOUT}s: "
+                f"{send_stderr_file.read().decode()}"
             ) from None
 
         if send_proc.returncode != 0 or receive_proc.returncode != 0:
@@ -517,6 +529,11 @@ def snapshot_send(req):
     try:
         log.info("Sending snapshot %s to %s", snapshot_path, remote_host)
         run_btrfs_send_receive(snapshot_path, remote_host, remote_snapshots, parent_path, port)
+    except ReplicationTimeoutError as e:
+        # the full send below would cross the same stalled link, and wait as
+        # long again: a transfer killed for hanging is not retried.
+        log.error("Sending snapshot %s to %s timed out: %s", snapshot_path, remote_host, str(e))
+        return {"Err": str(e)}
     except ReplicationError as e:
         log.warning(
             "Failed using parent %s. Sending full snapshot %s: %s", latest, snapshot_path, str(e)
@@ -533,7 +550,10 @@ def snapshot_send(req):
                 remote_host,
                 f"btrfs subvolume delete {remote_snapshots}/{snapshot_name} || true",
             ]
-            subprocess.run(rm_cmd, check=False, capture_output=True)
+            try:
+                subprocess.run(rm_cmd, check=False, capture_output=True, timeout=SEND_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                log.warning("Timed out deleting the remote snapshot %s", snapshot_name)
 
             # Send without parent
             run_btrfs_send_receive(snapshot_path, remote_host, remote_snapshots, None, port)
