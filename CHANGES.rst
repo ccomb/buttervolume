@@ -4,6 +4,8 @@ CHANGELOG
 3.13 (unreleased)
 *****************
 
+- Fixed the purge tests, which passed or failed depending on how long they took
+  to run.
 - Fixed the tests: create a BTRFS filesystems in a loop device if there is no BTRFS during tests.
 - Fixed the show command
 - Updated dependencies
