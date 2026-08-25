@@ -17,8 +17,14 @@ from unittest.mock import MagicMock, patch
 
 from webtest import TestApp
 
-from buttervolume import btrfs, cli, plugin
+from buttervolume import ValidationError, btrfs, cli, plugin
 from buttervolume.cli import init_btrfs, runjobs
+from buttervolume.names import (
+    Snapshot,
+    new_snapshot,
+    sent_snapshots,
+    snapshots_of,
+)
 from buttervolume.plugin import (
     DTFORMAT,
     SNAPSHOTS_PATH,
@@ -1078,6 +1084,45 @@ class TestCase(unittest.TestCase):
     def test_capabilities(self):
         rsp = jsonloads(self.app.post("/VolumeDriver.Capabilities", "{}").body)
         self.assertEqual(rsp.get("Capabilities", {}).get("Scope"), "local")
+
+
+class TestNames(unittest.TestCase):
+    """The naming rules, read and written without touching a filesystem"""
+
+    def test_a_snapshot_name_survives_a_round_trip(self):
+        for name in ("www@2026-08-26T10:00:00.000000", "www@2026-08-26T10:00:00.000000@node2"):
+            self.assertEqual(str(Snapshot.parse(name)), name)
+        snapshot = Snapshot.parse("www@2026-08-26T10:00:00.000000")
+        self.assertEqual(snapshot.volume, "www")
+        self.assertEqual(snapshot.timestamp, "2026-08-26T10:00:00.000000")
+        self.assertIsNone(snapshot.host)
+        self.assertEqual(snapshot.taken_at(DTFORMAT), datetime(2026, 8, 26, 10, 0, 0))
+
+    def test_a_name_that_is_not_a_snapshot_name_is_refused(self):
+        for bad in ("", "www", "@", "www@", "a@b@c@d", "www@$(reboot)", "www@2026-08-26 10:00"):
+            with self.assertRaises(ValidationError, msg=f"{bad!r} was accepted"):
+                Snapshot.parse(bad)
+
+    def test_a_new_snapshot_is_named_after_the_moment_it_is_taken(self):
+        now = datetime(2026, 8, 26, 10, 0, 0)
+        self.assertEqual(str(new_snapshot("www", DTFORMAT, now)), "www@2026-08-26T10:00:00.000000")
+        # a date format the API could not read back is refused, not created
+        with self.assertRaises(ValidationError):
+            new_snapshot("www", "%Y-%m-%d %H:%M:%S", now)
+
+    def test_the_snapshots_of_a_volume_are_its_own(self):
+        names = ["www@t1", "wwwbis@t1", "www@t2@node2", "other@t3"]
+        self.assertEqual(snapshots_of("www", names), ["www@t1", "www@t2@node2"])
+        # a directory nobody here created is left out rather than half read
+        self.assertEqual(snapshots_of("www", ["www@t 1", "www@t1"]), ["www@t1"])
+
+    def test_the_parent_of_a_send_is_the_last_one_sent_to_that_host(self):
+        names = ["www@t1", "www@t2", "www@t1@node2", "www@t2@node2", "other@t3@node2"]
+        already_sent = sent_snapshots("www", "node2", names)
+        self.assertEqual([str(s) for s in already_sent], ["www@t1@node2", "www@t2@node2"])
+        self.assertEqual(str(already_sent[-1].without_host()), "www@t2")
+        # and the trace this send will leave behind
+        self.assertEqual(str(Snapshot.parse("www@t3").sent_to("node2")), "www@t3@node2")
 
 
 class TemporaryDirectory(tempfile.TemporaryDirectory):

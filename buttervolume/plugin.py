@@ -3,7 +3,6 @@ import csv
 import json
 import logging
 import os
-import re
 import subprocess
 import tempfile
 import time
@@ -16,7 +15,6 @@ from bottle import request
 from bottle import route as bottle_route
 
 from buttervolume import (
-    ButtervolumeError,  # noqa: F401  (re-exported: the API answers with these)
     ReplicationError,
     ReplicationTimeoutError,
     SnapshotNotFoundError,
@@ -25,6 +23,15 @@ from buttervolume import (
     btrfs,
 )
 from buttervolume.btrfs import BtrfsError
+from buttervolume.names import (
+    Snapshot,
+    new_snapshot,
+    sent_snapshots,
+    snapshots_of,
+    validate_hostname,
+    validate_snapshot_name,
+    validate_volume_name,
+)
 
 config = configparser.ConfigParser()
 config.read("/etc/buttervolume/config.ini")
@@ -81,98 +88,31 @@ logging.basicConfig(level=LOGLEVEL)
 log = logging.getLogger()
 
 
-def validate_volume_name(name):
-    """Validate volume name for security and correctness"""
-    if not name:
-        raise ValidationError("Volume name cannot be empty")
+def volumepath(name):
+    """The path of this volume, whether or not it exists.
 
-    if "@" in name:
-        raise ValidationError('"@" is illegal in a volume name')
-
-    # Check for path traversal
-    if ".." in name or name.startswith("/"):
-        raise ValidationError("Invalid characters in volume name")
-
-    # Check for dangerous shell characters
-    dangerous_chars = [
-        "`",
-        "$",
-        "|",
-        "&",
-        ";",
-        ">",
-        "<",
-        "*",
-        "?",
-        "[",
-        "]",
-        "(",
-        ")",
-        "{",
-        "}",
-        "\\",
-    ]
-    if any(char in name for char in dangerous_chars):
-        raise ValidationError("Volume name contains dangerous characters")
-
-    # Ensure reasonable length
-    if len(name) > 255:
-        raise ValidationError("Volume name too long")
-
-    # Only allow alphanumeric, dash, underscore, dot
-    if not re.fullmatch(r"[a-zA-Z0-9._-]+", name):
-        raise ValidationError("Volume name contains invalid characters")
-
-    return name
-
-
-def validate_snapshot_name(name):
-    """Validate a snapshot name: volume@timestamp, plus @host for sent snapshots.
-
-    Snapshot names come from Docker or from a remote host and end up in a
-    path and in a shell command, so they get the same care as volume names.
+    A name becomes a path here and nowhere else, so this is also where it is
+    checked: no handler downstream has to remember to do it.
     """
-    if not name:
-        raise ValidationError("Snapshot name cannot be empty")
+    return join(VOLUMES_PATH, validate_volume_name(name))
 
-    if len(name) > 255:
-        raise ValidationError("Snapshot name too long")
 
-    parts = name.split("@")
-    if len(parts) not in (2, 3):
-        raise ValidationError("Invalid snapshot name format")
+def existing_volume(name):
+    """The subvolume of this volume, or a clear error when there is none."""
+    subvolume = btrfs.Subvolume(volumepath(name))
+    if not subvolume.exists():
+        raise VolumeNotFoundError(f"Volume '{name}': no such volume")
+    return subvolume
 
-    validate_volume_name(parts[0])
-    for part in parts[1:]:
-        if not part or not re.fullmatch(r"[a-zA-Z0-9.:_-]+", part):
-            raise ValidationError("Snapshot name contains invalid characters")
 
-    return name
+def snapshotpath(name):
+    """The path of this snapshot, whether or not it exists."""
+    return join(SNAPSHOTS_PATH, validate_snapshot_name(name))
 
 
 def new_snapshot_name(volume_name):
-    """Name a new snapshot of this volume, as the API will have to read it back.
-
-    DTFORMAT is configurable, so a format holding a space or a plus sign would
-    build a name the validation above rejects: the snapshot would exist and no
-    endpoint could name it again. Better to refuse to create it.
-    """
-    return validate_snapshot_name(f"{volume_name}@{datetime.now().strftime(DTFORMAT)}")
-
-
-def validate_hostname(hostname):
-    """Validate hostname for SSH operations"""
-    if not hostname:
-        raise ValidationError("Hostname cannot be empty")
-
-    # Basic hostname validation
-    if not re.fullmatch(r"[a-zA-Z0-9.-]+", hostname):
-        raise ValidationError("Invalid hostname format")
-
-    if len(hostname) > 253:
-        raise ValidationError("Hostname too long")
-
-    return hostname
+    """Name a new snapshot of this volume, using the configured date format."""
+    return str(new_snapshot(volume_name, DTFORMAT, datetime.now()))
 
 
 def answer(handler, kw):
@@ -301,9 +241,7 @@ def volume_create(req):
     name = req["Name"]
     opts = req.get("Opts", {}) or {}
 
-    validate_volume_name(name)
-
-    volpath = join(VOLUMES_PATH, name)
+    volpath = volumepath(name)
     # volume already exists?
     if name in [v["Name"] for v in list_volumes()["Volumes"]]:
         return {"Err": ""}
@@ -333,27 +271,14 @@ def volume_create(req):
     return {"Err": ""}
 
 
-def volumepath(name):
-    path = join(VOLUMES_PATH, name)
-    if not btrfs.Subvolume(path).exists():
-        raise VolumeNotFoundError(f"Volume '{name}': no such volume")
-    return path
-
-
 @route("/VolumeDriver.Mount")
 def volume_mount(req):
-    name = req["Name"]
-    validate_volume_name(name)
-    path = volumepath(name)
-    return {"Mountpoint": path, "Err": ""}
+    return {"Mountpoint": existing_volume(req["Name"]).path, "Err": ""}
 
 
 @route("/VolumeDriver.Path")
 def volume_path(req):
-    name = req["Name"]
-    validate_volume_name(name)
-    path = volumepath(name)
-    return {"Mountpoint": path, "Err": ""}
+    return {"Mountpoint": existing_volume(req["Name"]).path, "Err": ""}
 
 
 @route("/VolumeDriver.Unmount")
@@ -364,19 +289,12 @@ def volume_unmount(_):
 @route("/VolumeDriver.Get")
 def volume_get(req):
     name = req["Name"]
-    validate_volume_name(name)
-    path = volumepath(name)
-    return {"Volume": {"Name": name, "Mountpoint": path}, "Err": ""}
+    return {"Volume": {"Name": name, "Mountpoint": existing_volume(name).path}, "Err": ""}
 
 
 @route("/VolumeDriver.Remove")
 def volume_remove(req):
-    name = req["Name"]
-    validate_volume_name(name)
-    path = join(VOLUMES_PATH, name)
-    if not btrfs.Subvolume(path).exists():
-        raise VolumeNotFoundError(f"Volume '{name}': no such volume")
-    btrfs.Subvolume(path).delete()
+    existing_volume(req["Name"]).delete()
     return {"Err": ""}
 
 
@@ -423,7 +341,7 @@ def volume_sync(req):
         return {"Err": "\n".join(errors)}
 
     for volume_name in volumes:
-        local_volume_path = join(VOLUMES_PATH, volume_name)
+        local_volume_path = volumepath(volume_name)
         remote_volume_path = join(remote_volumes, volume_name)
         for remote_host in remote_hosts:
             log.debug("Rsync volume: %s from host: %s", local_volume_path, remote_host)
@@ -469,27 +387,17 @@ def snapshot_send(req):
     snapshot_name = req["Name"]
     remote_host = req["Host"]
 
-    validate_snapshot_name(snapshot_name)
+    snapshot = Snapshot.parse(snapshot_name)
     validate_hostname(remote_host)
 
-    snapshot_path = join(SNAPSHOTS_PATH, snapshot_name)
+    snapshot_path = snapshotpath(snapshot_name)
     remote_snapshots = SNAPSHOTS_PATH if not test else TEST_REMOTE_PATH
 
-    # take the latest snapshot suffixed with the target host
-    sent_snapshots = sorted(
-        [
-            s
-            for s in os.listdir(SNAPSHOTS_PATH)
-            if len(s.split("@")) == 3
-            and s.split("@")[0] == snapshot_name.split("@")[0]
-            and s.split("@")[2] == remote_host
-        ]
-    )
-    latest = sent_snapshots[-1] if len(sent_snapshots) > 0 else None
-    if latest and len(latest.rsplit("@")) == 3:
-        latest = latest.rsplit("@", 1)[0]
-
-    parent_path = join(SNAPSHOTS_PATH, latest) if latest else None
+    # the previous send to that host left a trace: its snapshot is the parent
+    # this one can be sent against
+    already_sent = sent_snapshots(snapshot.volume, remote_host, os.listdir(SNAPSHOTS_PATH))
+    latest = str(already_sent[-1].without_host()) if already_sent else None
+    parent_path = snapshotpath(latest) if latest else None
     port = os.getenv("SSH_PORT", "1122")
 
     try:
@@ -522,14 +430,16 @@ def snapshot_send(req):
         run_btrfs_send_receive(snapshot_path, remote_host, remote_snapshots, None, port)
 
     # Create local tracking snapshot
-    btrfs.Subvolume(snapshot_path).snapshot(f"{snapshot_path}@{remote_host}", readonly=True)
+    btrfs.Subvolume(snapshot_path).snapshot(
+        snapshotpath(str(snapshot.sent_to(remote_host))), readonly=True
+    )
 
     # Clean up old tracking snapshots
-    for old_snapshot in sent_snapshots:
+    for old_snapshot in already_sent:
         try:
-            btrfs.Subvolume(join(SNAPSHOTS_PATH, old_snapshot)).delete()
+            btrfs.Subvolume(snapshotpath(str(old_snapshot))).delete()
         except Exception as e:
-            log.warning("Failed to delete old snapshot %s: %s", old_snapshot, str(e))
+            log.warning("Failed to delete old snapshot %s: %s", str(old_snapshot), str(e))
 
     return {"Err": ""}
 
@@ -538,16 +448,10 @@ def snapshot_send(req):
 def volume_snapshot(req):
     """snapshot a volume in the SNAPSHOTS dir"""
     name = req["Name"]
-    validate_volume_name(name)
-
-    path = join(VOLUMES_PATH, name)
-    if not os.path.exists(path) or not btrfs.Subvolume(path).exists():
-        raise VolumeNotFoundError(f"Volume '{name}': no such volume")
+    volume = existing_volume(name)
 
     timestamped = new_snapshot_name(name)
-    snapshot_path = join(SNAPSHOTS_PATH, timestamped)
-
-    btrfs.Subvolume(path).snapshot(snapshot_path, readonly=True)
+    volume.snapshot(snapshotpath(timestamped), readonly=True)
     return {"Err": "", "Snapshot": timestamped}
 
 
@@ -559,22 +463,16 @@ def snapshot_list(_):
 
 @route("/VolumeDriver.Snapshot.List/<name>", "GET")
 def snapshot_sublist(_, name=""):
-    # Validate volume name if provided
-    if name:
-        validate_volume_name(name)
-
     snapshots = os.listdir(SNAPSHOTS_PATH)
     if name:
-        snapshots = [s for s in snapshots if s.startswith(name + "@")]
+        snapshots = snapshots_of(validate_volume_name(name), snapshots)
     return {"Err": "", "Snapshots": snapshots}
 
 
 @route("/VolumeDriver.Snapshot.Remove")
 def snapshot_delete(req):
     name = req["Name"]
-    validate_snapshot_name(name)
-
-    path = join(SNAPSHOTS_PATH, name)
+    path = snapshotpath(name)
     if not os.path.exists(path):
         raise SnapshotNotFoundError(f"Snapshot '{name}' not found")
 
@@ -655,25 +553,19 @@ def snapshot_restore(req):
 
     if "@" not in snapshot_name:
         # we're passing the name of the volume. Use the latest snapshot.
-        volume_name = snapshot_name
-        validate_volume_name(volume_name)
-        snapshots = os.listdir(SNAPSHOTS_PATH)
-        snapshots = [s for s in snapshots if s.startswith(volume_name + "@")]
+        volume_name = validate_volume_name(snapshot_name)
+        snapshots = snapshots_of(volume_name, os.listdir(SNAPSHOTS_PATH))
         if not snapshots:
             raise SnapshotNotFoundError(f"No snapshots found for volume '{volume_name}'")
-        snapshot_name = sorted(snapshots)[-1]
-    else:
-        validate_snapshot_name(snapshot_name)
+        snapshot_name = snapshots[-1]
 
-    snapshot_path = join(SNAPSHOTS_PATH, snapshot_name)
+    snapshot_path = snapshotpath(snapshot_name)
     if not os.path.exists(snapshot_path):
         raise SnapshotNotFoundError(f"Snapshot '{snapshot_name}' not found")
 
     snapshot = btrfs.Subvolume(snapshot_path)
-    target_name = target_name or snapshot_name.split("@")[0]
-    validate_volume_name(target_name)
-
-    target_path = join(VOLUMES_PATH, target_name)
+    target_name = target_name or Snapshot.parse(snapshot_name).volume
+    target_path = volumepath(target_name)
     volume = btrfs.Subvolume(target_path)
     res = {"Err": ""}
 
@@ -683,8 +575,7 @@ def snapshot_restore(req):
     if volume.exists():
         # backup and delete
         stamped_name = new_snapshot_name(target_name)
-        stamped_path = join(SNAPSHOTS_PATH, stamped_name)
-        volume.snapshot(stamped_path, readonly=True)
+        volume.snapshot(snapshotpath(stamped_name), readonly=True)
         res["VolumeBackup"] = stamped_name
         volume.delete()
 
@@ -700,16 +591,8 @@ def snapshot_clone(req):
     volumename = req["Name"]
     targetname = req.get("Target")
 
-    # Validate input names
-    validate_volume_name(volumename)
-    validate_volume_name(targetname)
-
-    volumepath = join(VOLUMES_PATH, volumename)
-    targetpath = join(VOLUMES_PATH, targetname)
-
-    volume = btrfs.Subvolume(volumepath)
-    if not volume.exists():
-        raise VolumeNotFoundError(f"Source volume '{volumename}': no such volume")
+    volume = existing_volume(volumename)
+    targetpath = volumepath(targetname)
 
     # Check if target already exists
     target_volume = btrfs.Subvolume(targetpath)
@@ -726,11 +609,8 @@ def snapshots_purge(req):
     Purge snapshots with a retention pattern
     (see cli help)
     """
-    volume_name = req["Name"]
+    volume_name = validate_volume_name(req["Name"])
     dryrun = req.get("Dryrun", False)
-
-    # Validate volume name
-    validate_volume_name(volume_name)
 
     # Validate pattern with strict rules (no backward compatibility for immediate purge)
     warning = validate_purge_pattern(req["Pattern"], allow_backward_compat=False)
@@ -740,8 +620,7 @@ def snapshots_purge(req):
     # Parse pattern for compute_purges
     pattern = parse_purge_pattern(req["Pattern"])
 
-    # snapshots related to the volume, more recents first
-    snapshots = [s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(volume_name + "@")]
+    snapshots = snapshots_of(volume_name, os.listdir(SNAPSHOTS_PATH))
 
     # Compute which snapshots to purge
     now = datetime.now()
@@ -752,7 +631,7 @@ def snapshots_purge(req):
             log.info(f"(Dry run) Would delete snapshot {snapshot}")
         else:
             # Delete the BTRFS subvolume (xattrs are automatically deleted with it)
-            btrfs.Subvolume(join(SNAPSHOTS_PATH, snapshot)).delete()
+            btrfs.Subvolume(snapshotpath(snapshot)).delete()
             log.info(f"Deleted snapshot {snapshot}")
 
     return {"Err": ""}
@@ -860,13 +739,13 @@ def compute_purges(snapshots, pattern, now):
     valid_snapshots = []
     for s in snapshots:
         try:
-            snapshots_age.append(
-                int((now - datetime.strptime(s.split("@")[1], DTFORMAT)).total_seconds()) / 60
-            )
-            valid_snapshots.append(s)
-        except Exception:
+            age = now - Snapshot.parse(s).taken_at(DTFORMAT)
+        except (ValidationError, ValueError):
+            # a purge does not delete what it cannot date
             log.info("Skipping purge of %s with invalid date format", s)
             continue
+        snapshots_age.append(int(age.total_seconds()) / 60)
+        valid_snapshots.append(s)
     if not valid_snapshots:
         return purge_list
 
