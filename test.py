@@ -196,7 +196,15 @@ class TestCase(unittest.TestCase):
         self.assertTrue(resp["Err"])
         self.assertTrue(os.path.exists(join(VOLUMES_PATH, name)))
         # malformed names are rejected by the three endpoints taking a snapshot name
-        for bad in ("@", "foo@", "a@b@c@d", "foo@$(reboot)", "foo@back`tick"):
+        for bad in (
+            "@",
+            "foo@",
+            "a@b@c@d",
+            "foo@$(reboot)",
+            "foo@back`tick",
+            # a trailing newline splits the remote command line in two
+            "foo@2026-01-01T00:00:00.000000\n",
+        ):
             for urlpath, param in (
                 ("/VolumeDriver.Snapshot.Remove", {"Name": bad}),
                 ("/VolumeDriver.Snapshot.Send", {"Name": bad, "Host": "localhost"}),
@@ -206,6 +214,19 @@ class TestCase(unittest.TestCase):
                 self.assertTrue(resp["Err"], f"{urlpath} accepted {bad!r}")
         # cleanup
         self.app.post("/VolumeDriver.Snapshot.Remove", json.dumps({"Name": snap}))
+        self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name}))
+
+    def test_snapshot_name_must_stay_readable(self):
+        """A DTFORMAT building a name the API cannot read back is refused"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        # a space in the timestamp would give a snapshot no endpoint can name
+        with patch("buttervolume.plugin.DTFORMAT", "%Y-%m-%d %H:%M:%S"):
+            resp = jsonloads(
+                self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body
+            )
+        self.assertTrue(resp["Err"])
+        self.assertEqual([s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")], [])
         self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name}))
 
     def create_a_volume_with_a_file(self, name):

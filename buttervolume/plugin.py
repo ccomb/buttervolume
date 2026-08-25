@@ -139,7 +139,7 @@ def validate_volume_name(name):
         raise ValidationError("Volume name too long")
 
     # Only allow alphanumeric, dash, underscore, dot
-    if not re.match(r"^[a-zA-Z0-9._-]+$", name):
+    if not re.fullmatch(r"[a-zA-Z0-9._-]+", name):
         raise ValidationError("Volume name contains invalid characters")
 
     return name
@@ -163,10 +163,20 @@ def validate_snapshot_name(name):
 
     validate_volume_name(parts[0])
     for part in parts[1:]:
-        if not part or not re.match(r"^[a-zA-Z0-9.:_-]+$", part):
+        if not part or not re.fullmatch(r"[a-zA-Z0-9.:_-]+", part):
             raise ValidationError("Snapshot name contains invalid characters")
 
     return name
+
+
+def new_snapshot_name(volume_name):
+    """Name a new snapshot of this volume, as the API will have to read it back.
+
+    DTFORMAT is configurable, so a format holding a space or a plus sign would
+    build a name the validation above rejects: the snapshot would exist and no
+    endpoint could name it again. Better to refuse to create it.
+    """
+    return validate_snapshot_name(f"{volume_name}@{datetime.now().strftime(DTFORMAT)}")
 
 
 def validate_hostname(hostname):
@@ -175,7 +185,7 @@ def validate_hostname(hostname):
         raise ValidationError("Hostname cannot be empty")
 
     # Basic hostname validation
-    if not re.match(r"^[a-zA-Z0-9.-]+$", hostname):
+    if not re.fullmatch(r"[a-zA-Z0-9.-]+", hostname):
         raise ValidationError("Invalid hostname format")
 
     if len(hostname) > 253:
@@ -544,7 +554,7 @@ def volume_snapshot(req):
     if not os.path.exists(path) or not btrfs.Subvolume(path).exists():
         raise VolumeNotFoundError(f"Volume '{name}': no such volume")
 
-    timestamped = f"{name}@{datetime.now().strftime(DTFORMAT)}"
+    timestamped = new_snapshot_name(name)
     snapshot_path = join(SNAPSHOTS_PATH, timestamped)
 
     btrfs.Subvolume(path).snapshot(snapshot_path, readonly=True)
@@ -693,8 +703,7 @@ def snapshot_restore(req):
 
     if volume.exists():
         # backup and delete
-        timestamp = datetime.now().strftime(DTFORMAT)
-        stamped_name = f"{target_name}@{timestamp}"
+        stamped_name = new_snapshot_name(target_name)
         stamped_path = join(SNAPSHOTS_PATH, stamped_name)
         volume.snapshot(stamped_path, readonly=True)
         res["VolumeBackup"] = stamped_name
