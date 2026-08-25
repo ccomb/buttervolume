@@ -252,6 +252,36 @@ class TestCase(unittest.TestCase):
             json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 0}),
         )
 
+    def test_send_error_reports_send_stderr(self):
+        """A failed send/receive reports the error of the send side too"""
+        missing = join(SNAPSHOTS_PATH, PREFIX_TEST_VOLUME + "missing@snap")
+        with self.assertRaises(plugin.ReplicationError) as ctx:
+            # the send fails (missing snapshot) and ssh fails (port 1 refused):
+            # the exception must carry the send side error, which names the path
+            plugin.run_btrfs_send_receive(missing, "localhost", SNAPSHOTS_PATH, port="1")
+        self.assertIn(missing, str(ctx.exception))
+
+    def test_send_timeout_is_not_retried(self):
+        """A transfer killed for hanging is not sent again over the same link"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        snap = jsonloads(self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body)[
+            "Snapshot"
+        ]
+        with patch("buttervolume.plugin.run_btrfs_send_receive") as mock_send:
+            mock_send.side_effect = plugin.ReplicationTimeoutError("waited too long")
+            resp = jsonloads(
+                self.app.post(
+                    "/VolumeDriver.Snapshot.Send",
+                    json.dumps({"Name": snap, "Host": "localhost", "Test": True}),
+                ).body
+            )
+        mock_send.assert_called_once()
+        self.assertIn("waited too long", resp["Err"])
+        # cleanup
+        self.app.post("/VolumeDriver.Snapshot.Remove", json.dumps({"Name": snap}))
+        self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name}))
+
     def create_a_volume_with_a_file(self, name):
         # create a volume with a file
         path = join(VOLUMES_PATH, name)

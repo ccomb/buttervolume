@@ -13,6 +13,11 @@ CHANGELOG
   of creating a snapshot no endpoint could name again.
 - Fixed the cleanup of the snapshot created for a failed scheduled replication:
   it crashed instead of deleting the snapshot, leaving it behind.
+- A snapshot send to another node is now killed after a configurable timeout
+  (``SEND_TIMEOUT``, 10 minutes by default) instead of hanging forever, and a
+  verbose failure of the send side can no longer deadlock the transfer. A
+  transfer killed this way is reported as such and not sent again in full over
+  the same link.
 - Fixed the purge tests, which passed or failed depending on how long they took
   to run.
 - Fixed the tests: create a BTRFS filesystems in a loop device if there is no BTRFS during tests.
