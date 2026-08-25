@@ -41,6 +41,9 @@ def run_safe(cmd, timeout, error=BtrfsError):
         raise error(f"Command failed: {' '.join(cmd)}\nStderr: {stderr}") from e
     except TimeoutExpired as e:
         raise error(f"Command timed out after {timeout}s: {' '.join(cmd)}") from e
+    except OSError as e:
+        # The command could not even be started: missing binary, no permission
+        raise error(f"Command could not be run: {' '.join(cmd)}\n{e}") from e
 
 
 class Subvolume:

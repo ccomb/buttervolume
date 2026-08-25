@@ -720,6 +720,11 @@ class TestCase(unittest.TestCase):
         # the original failure stays reachable instead of being swallowed
         self.assertIsInstance(caught.exception.__cause__, CalledProcessError)
 
+    def test_run_safe_missing_command(self):
+        """A command that cannot even be started is reported like any other failure"""
+        with self.assertRaises(btrfs.BtrfsError):
+            btrfs.run_safe(["there_is_no_such_command"], timeout=btrfs.SHOW_TIMEOUT)
+
     def test_compute_purge(self):
         now = datetime.now()
         snapshots = [
