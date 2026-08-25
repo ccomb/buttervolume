@@ -8,10 +8,12 @@ import subprocess
 import tempfile
 import time
 from datetime import datetime
+from functools import wraps
 from os.path import basename, dirname, join
 from subprocess import run
 
-from bottle import request, route
+from bottle import request
+from bottle import route as bottle_route
 
 from buttervolume import btrfs
 from buttervolume.btrfs import BtrfsError
@@ -203,28 +205,52 @@ def validate_hostname(hostname):
     return hostname
 
 
-def safe_handler(func):
-    """Decorator that provides unified error handling for plugin operations"""
+def answer(handler, req, kw):
+    """Turn whatever the handler does into the response body.
 
-    def wrapper(*args, **kwargs):
-        try:
-            result = func(*args, **kwargs)
-            return result if isinstance(result, dict) else {"Err": ""}
-        except (
-            ValidationError,
-            VolumeNotFoundError,
-            SnapshotNotFoundError,
-            ReplicationError,
-            BtrfsError,
-        ) as e:
-            return {"Err": str(e)}
-        except Exception as e:
-            log.error("Unexpected error in %s: %s", func.__name__, str(e))
-            if hasattr(e, "stderr") and e.stderr:
-                return {"Err": e.stderr.decode()}
-            return {"Err": f"Unexpected error: {str(e)}"}
+    An error is a non-empty "Err" key, because that is all the client knows
+    how to read: a handler that raises must not become a 500.
+    """
+    try:
+        result = handler(req, **kw)
+        return result if isinstance(result, dict) else {"Err": ""}
+    except (
+        ValidationError,
+        VolumeNotFoundError,
+        SnapshotNotFoundError,
+        ReplicationError,
+        BtrfsError,
+    ) as e:
+        return {"Err": str(e)}
+    except Exception as e:
+        log.error("Unexpected error in %s: %s", handler.__name__, str(e))
+        if hasattr(e, "stderr") and e.stderr:
+            return {"Err": e.stderr.decode()}
+        return {"Err": f"Unexpected error: {str(e)}"}
 
-    return wrapper
+
+def route(path, method="POST"):
+    """Serve this path, and hold the contract of the whole API in one place.
+
+    Every endpoint answers 200 with a JSON body where an error is a non-empty
+    "Err" key. A handler decorated here receives the decoded request and
+    returns the response dict; the decoding, the journal and the error
+    contract are no longer its business, so it cannot get them wrong.
+    """
+
+    def decorate(handler):
+        @bottle_route(path, [method])
+        @wraps(handler)
+        def serve(**kw):
+            req = json.loads(request.body.read().decode() or "{}")
+            log.debug("Request: %s %s", request.path, req)
+            resp = json.dumps(answer(handler, req, kw))
+            log.debug("Response: %s", resp)
+            return resp
+
+        return serve
+
+    return decorate
 
 
 def run_btrfs_send_receive(
@@ -294,26 +320,12 @@ def run_btrfs_send_receive(
     return receive_stdout.decode()
 
 
-def add_debug_log(handler):
-    def new_handler(*_, **kw):
-        req = json.loads(request.body.read().decode() or "{}")
-        log.debug("Request: %s %s", request.path, req)
-        resp = json.dumps(handler(req, **kw))
-        log.debug("Response: %s", resp)
-        return resp
-
-    return new_handler
-
-
-@route("/Plugin.Activate", ["POST"])
-@add_debug_log
+@route("/Plugin.Activate")
 def plugin_activate(_):
     return {"Implements": ["VolumeDriver"]}
 
 
-@route("/VolumeDriver.Create", ["POST"])
-@add_debug_log
-@safe_handler
+@route("/VolumeDriver.Create")
 def volume_create(req):
     name = req["Name"]
     opts = req.get("Opts", {}) or {}
@@ -357,9 +369,7 @@ def volumepath(name):
     return path
 
 
-@route("/VolumeDriver.Mount", ["POST"])
-@add_debug_log
-@safe_handler
+@route("/VolumeDriver.Mount")
 def volume_mount(req):
     name = req["Name"]
     validate_volume_name(name)
@@ -367,9 +377,7 @@ def volume_mount(req):
     return {"Mountpoint": path, "Err": ""}
 
 
-@route("/VolumeDriver.Path", ["POST"])
-@add_debug_log
-@safe_handler
+@route("/VolumeDriver.Path")
 def volume_path(req):
     name = req["Name"]
     validate_volume_name(name)
@@ -377,15 +385,12 @@ def volume_path(req):
     return {"Mountpoint": path, "Err": ""}
 
 
-@route("/VolumeDriver.Unmount", ["POST"])
-@add_debug_log
+@route("/VolumeDriver.Unmount")
 def volume_unmount(_):
     return {"Err": ""}
 
 
-@route("/VolumeDriver.Get", ["POST"])
-@add_debug_log
-@safe_handler
+@route("/VolumeDriver.Get")
 def volume_get(req):
     name = req["Name"]
     validate_volume_name(name)
@@ -393,9 +398,7 @@ def volume_get(req):
     return {"Volume": {"Name": name, "Mountpoint": path}, "Err": ""}
 
 
-@route("/VolumeDriver.Remove", ["POST"])
-@add_debug_log
-@safe_handler
+@route("/VolumeDriver.Remove")
 def volume_remove(req):
     name = req["Name"]
     validate_volume_name(name)
@@ -406,8 +409,7 @@ def volume_remove(req):
     return {"Err": ""}
 
 
-@route("/VolumeDriver.List", ["POST"])
-@add_debug_log
+@route("/VolumeDriver.List")
 def volume_list(_):
     return list_volumes()
 
@@ -421,8 +423,7 @@ def list_volumes():
     return {"Volumes": [{"Name": basename(v)} for v in volumes], "Err": ""}
 
 
-@route("/VolumeDriver.Volume.Sync", ["POST"])
-@add_debug_log
+@route("/VolumeDriver.Volume.Sync")
 def volume_sync(req):
     """Rsync between two nodes"""
     test = req.get("Test", False)
@@ -482,8 +483,7 @@ def volume_sync(req):
     return {"Err": "\n".join(errors)}
 
 
-@route("/VolumeDriver.Capabilities", ["POST"])
-@add_debug_log
+@route("/VolumeDriver.Capabilities")
 def driver_cap(_):
     """butter volumes are local to the active node.
     They only exist as snapshots on the remote nodes.
@@ -491,20 +491,15 @@ def driver_cap(_):
     return {"Capabilities": {"Scope": "local"}}
 
 
-@route("/VolumeDriver.Snapshot.Send", ["POST"])
-@add_debug_log
+@route("/VolumeDriver.Snapshot.Send")
 def snapshot_send(req):
     """The last sent snapshot is remembered by adding a suffix with the target"""
     test = req.get("Test", False)
     snapshot_name = req["Name"]
     remote_host = req["Host"]
 
-    # Validate inputs
-    try:
-        validate_snapshot_name(snapshot_name)
-        validate_hostname(remote_host)
-    except ValidationError as e:
-        return {"Err": str(e)}
+    validate_snapshot_name(snapshot_name)
+    validate_hostname(remote_host)
 
     snapshot_path = join(SNAPSHOTS_PATH, snapshot_name)
     remote_snapshots = SNAPSHOTS_PATH if not test else TEST_REMOTE_PATH
@@ -529,37 +524,31 @@ def snapshot_send(req):
     try:
         log.info("Sending snapshot %s to %s", snapshot_path, remote_host)
         run_btrfs_send_receive(snapshot_path, remote_host, remote_snapshots, parent_path, port)
-    except ReplicationTimeoutError as e:
+    except ReplicationTimeoutError:
         # the full send below would cross the same stalled link, and wait as
         # long again: a transfer killed for hanging is not retried.
-        log.error("Sending snapshot %s to %s timed out: %s", snapshot_path, remote_host, str(e))
-        return {"Err": str(e)}
+        raise
     except ReplicationError as e:
         log.warning(
             "Failed using parent %s. Sending full snapshot %s: %s", latest, snapshot_path, str(e)
         )
+        # Try to remove existing snapshot on remote and send full
+        rm_cmd = [
+            "ssh",
+            "-p",
+            port,
+            "-o",
+            "StrictHostKeyChecking=no",
+            remote_host,
+            f"btrfs subvolume delete {remote_snapshots}/{snapshot_name} || true",
+        ]
         try:
-            # Try to remove existing snapshot on remote and send full
+            subprocess.run(rm_cmd, check=False, capture_output=True, timeout=SEND_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            log.warning("Timed out deleting the remote snapshot %s", snapshot_name)
 
-            rm_cmd = [
-                "ssh",
-                "-p",
-                port,
-                "-o",
-                "StrictHostKeyChecking=no",
-                remote_host,
-                f"btrfs subvolume delete {remote_snapshots}/{snapshot_name} || true",
-            ]
-            try:
-                subprocess.run(rm_cmd, check=False, capture_output=True, timeout=SEND_TIMEOUT)
-            except subprocess.TimeoutExpired:
-                log.warning("Timed out deleting the remote snapshot %s", snapshot_name)
-
-            # Send without parent
-            run_btrfs_send_receive(snapshot_path, remote_host, remote_snapshots, None, port)
-        except ReplicationError as e2:
-            log.error("Failed sending full snapshot: %s", str(e2))
-            return {"Err": str(e2)}
+        # Send without parent
+        run_btrfs_send_receive(snapshot_path, remote_host, remote_snapshots, None, port)
 
     # Create local tracking snapshot
     btrfs.Subvolume(snapshot_path).snapshot(f"{snapshot_path}@{remote_host}", readonly=True)
@@ -574,9 +563,7 @@ def snapshot_send(req):
     return {"Err": ""}
 
 
-@route("/VolumeDriver.Snapshot", ["POST"])
-@add_debug_log
-@safe_handler
+@route("/VolumeDriver.Snapshot")
 def volume_snapshot(req):
     """snapshot a volume in the SNAPSHOTS dir"""
     name = req["Name"]
@@ -593,16 +580,13 @@ def volume_snapshot(req):
     return {"Err": "", "Snapshot": timestamped}
 
 
-@route("/VolumeDriver.Snapshot.List", ["GET"])
-@add_debug_log
+@route("/VolumeDriver.Snapshot.List", "GET")
 def snapshot_list(_):
     snapshots = os.listdir(SNAPSHOTS_PATH)
     return {"Err": "", "Snapshots": snapshots}
 
 
-@route("/VolumeDriver.Snapshot.List/<name>", ["GET"])
-@add_debug_log
-@safe_handler
+@route("/VolumeDriver.Snapshot.List/<name>", "GET")
 def snapshot_sublist(_, name=""):
     # Validate volume name if provided
     if name:
@@ -614,9 +598,7 @@ def snapshot_sublist(_, name=""):
     return {"Err": "", "Snapshots": snapshots}
 
 
-@route("/VolumeDriver.Snapshot.Remove", ["POST"])
-@add_debug_log
-@safe_handler
+@route("/VolumeDriver.Snapshot.Remove")
 def snapshot_delete(req):
     name = req["Name"]
     validate_snapshot_name(name)
@@ -629,8 +611,7 @@ def snapshot_delete(req):
     return {"Err": ""}
 
 
-@route("/VolumeDriver.Schedule", ["POST"])
-@add_debug_log
+@route("/VolumeDriver.Schedule")
 def schedule(req):
     """Schedule or unschedule a job"""
     name = req["Name"]
@@ -665,8 +646,7 @@ def schedule(req):
     return {"Err": ""}
 
 
-@route("/VolumeDriver.Schedule.List", ["GET"])
-@add_debug_log
+@route("/VolumeDriver.Schedule.List", "GET")
 def scheduled(_):
     """List scheduled jobs"""
     if os.path.exists(SCHEDULE_DISABLED):
@@ -678,8 +658,7 @@ def scheduled(_):
     return {"Err": "", "Schedule": schedule}
 
 
-@route("/VolumeDriver.Schedule.Pause", ["POST"])
-@add_debug_log
+@route("/VolumeDriver.Schedule.Pause")
 def schedule_disable(_):
     """Disable scheduled jobs"""
     if os.path.exists(SCHEDULE):
@@ -687,8 +666,7 @@ def schedule_disable(_):
     return {"Err": ""}
 
 
-@route("/VolumeDriver.Schedule.Resume", ["POST"])
-@add_debug_log
+@route("/VolumeDriver.Schedule.Resume")
 def schedule_enable(_):
     """Enable scheduled jobs"""
     if os.path.exists(SCHEDULE_DISABLED):
@@ -696,9 +674,7 @@ def schedule_enable(_):
     return {"Err": ""}
 
 
-@route("/VolumeDriver.Snapshot.Restore", ["POST"])
-@add_debug_log
-@safe_handler
+@route("/VolumeDriver.Snapshot.Restore")
 def snapshot_restore(req):
     """
     Snapshot a volume and overwrite it with the specified snapshot.
@@ -745,9 +721,7 @@ def snapshot_restore(req):
     return res
 
 
-@route("/VolumeDriver.Clone", ["POST"])
-@add_debug_log
-@safe_handler
+@route("/VolumeDriver.Clone")
 def snapshot_clone(req):
     """
     Create a new volume as clone from another.
@@ -775,9 +749,7 @@ def snapshot_clone(req):
     return {"Err": "", "VolumeCloned": targetname}
 
 
-@route("/VolumeDriver.Snapshots.Purge", ["POST"])
-@add_debug_log
-@safe_handler
+@route("/VolumeDriver.Snapshots.Purge")
 def snapshots_purge(req):
     """
     Purge snapshots with a retention pattern

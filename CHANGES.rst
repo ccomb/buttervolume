@@ -4,6 +4,12 @@ CHANGELOG
 3.13 (unreleased)
 *****************
 
+- Every endpoint now goes through a single decorator that decodes the request,
+  logs it and turns any failure into the ``Err`` field of a 200 answer. Six
+  routes, among them the scheduling ones and the snapshot send, used to answer
+  a bare HTTP 500 on an unexpected error, which no client of this API knows how
+  to read.
+
 - The chattr call enabling compression no longer goes through a shell with the
   volume path interpolated in the command line.
 - Snapshot names received through the API are now validated like volume names:

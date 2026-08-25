@@ -815,6 +815,26 @@ class TestCase(unittest.TestCase):
         cleanup_snapshots()
         self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name}))
 
+    def test_every_route_answers_json(self):
+        """One decorator, one contract: no request turns a route into a 500.
+
+        Sent an empty body, every handler stumbles on a missing key, and the
+        client must still read a JSON body from a 200 answer.
+        """
+        disabled = plugin.SCHEDULE_DISABLED
+        plugin.SCHEDULE_DISABLED = SCHEDULE + ".disabled"
+        self.assertTrue(cli.app.routes)
+        try:
+            for route in cli.app.routes:
+                path = route.rule.replace("<name>", PREFIX_TEST_VOLUME + "nothing")
+                resp = self.app.request(path, method=route.method, body=b"", expect_errors=True)
+                self.assertEqual(resp.status_int, 200, path)
+                self.assertIsInstance(jsonloads(resp.body), dict, path)
+        finally:
+            with suppress(OSError):
+                os.rename(plugin.SCHEDULE_DISABLED, SCHEDULE)
+            plugin.SCHEDULE_DISABLED = disabled
+
     def test_run_safe_typed_error(self):
         """A failed command raises the requested type, and says which command failed"""
         missing = join(VOLUMES_PATH, "there_is_no_such_volume")
