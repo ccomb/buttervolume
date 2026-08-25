@@ -641,6 +641,39 @@ class TestCase(unittest.TestCase):
             json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 0}),
         )
 
+    def test_restore_of_a_volume_takes_its_latest_snapshot_or_says_why_not(self):
+        """A snapshot nobody can name again hides no other one behind it"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        path = join(VOLUMES_PATH, name)
+        self.create_a_volume_with_a_file(name)
+        self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name}))
+        # a snapshot from an older version, taken under a date format holding
+        # a space, and more recent than the one above
+        legacy = f"{name}@2999-01-01 00:00:00"
+        btrfs.Subvolume(path).snapshot(join(SNAPSHOTS_PATH, legacy), readonly=True)
+        with open(join(path, "foobar"), "w") as f:
+            f.write("modified foobar")
+        # restoring by volume name must not silently fall back to the snapshot
+        # underneath: the latest one is unusable, and the answer says so
+        resp = jsonloads(
+            self.app.post("/VolumeDriver.Snapshot.Restore", json.dumps({"Name": name})).body
+        )
+        self.assertTrue(resp["Err"])
+        with open(join(path, "foobar")) as f:
+            self.assertEqual(f.read(), "modified foobar")
+        # cleanup
+        btrfs.Subvolume(join(SNAPSHOTS_PATH, legacy)).delete()
+
+    def test_the_trace_of_a_send_cannot_be_sent(self):
+        """Sending it back would name its own trace, and only fail once sent"""
+        resp = jsonloads(
+            self.app.post(
+                "/VolumeDriver.Snapshot.Send",
+                json.dumps({"Name": "www@2026-01-01T00:00:00.000000@node2", "Host": "node2"}),
+            ).body
+        )
+        self.assertIn("trace of a send", resp["Err"])
+
     def test_restore(self):
         """Check we can restore a snapshot as a volume"""
         # create a volume with a file
@@ -1113,8 +1146,9 @@ class TestNames(unittest.TestCase):
     def test_the_snapshots_of_a_volume_are_its_own(self):
         names = ["www@t1", "wwwbis@t1", "www@t2@node2", "other@t3"]
         self.assertEqual(snapshots_of("www", names), ["www@t1", "www@t2@node2"])
-        # a directory nobody here created is left out rather than half read
-        self.assertEqual(snapshots_of("www", ["www@t 1", "www@t1"]), ["www@t1"])
+        # a name we could not have written is still shown: hiding it would let
+        # the caller take www@t1 for the most recent snapshot of the volume
+        self.assertEqual(snapshots_of("www", ["www@t 2", "www@t1"]), ["www@t 2", "www@t1"])
 
     def test_the_parent_of_a_send_is_the_last_one_sent_to_that_host(self):
         names = ["www@t1", "www@t2", "www@t1@node2", "www@t2@node2", "other@t3@node2"]

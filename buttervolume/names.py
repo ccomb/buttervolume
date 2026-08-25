@@ -157,8 +157,14 @@ def parsed(names):
 
 
 def snapshots_of(volume, names):
-    """The names among these that are snapshots of this volume, oldest first."""
-    return sorted(str(s) for s in parsed(names) if s.volume == volume)
+    """The names among these that are snapshots of this volume, oldest first.
+
+    A name we could not have written is kept, not quietly dropped: hiding it
+    would let the caller believe it has seen everything, and pick the second
+    most recent snapshot thinking it is the most recent one. It is refused
+    later, when it becomes a path, and then the answer says so.
+    """
+    return sorted(n for n in names if n.startswith(volume + "@"))
 
 
 def sent_snapshots(volume, host, names):

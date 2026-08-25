@@ -388,6 +388,13 @@ def snapshot_send(req):
     remote_host = req["Host"]
 
     snapshot = Snapshot.parse(snapshot_name)
+    if snapshot.host:
+        # sending a trace would name its own trace, and btrfs would refuse
+        # once the transfer is already done
+        raise ValidationError(
+            f"'{snapshot_name}' is the trace of a send to {snapshot.host}, "
+            "not a snapshot that can be sent"
+        )
     validate_hostname(remote_host)
 
     snapshot_path = snapshotpath(snapshot_name)
