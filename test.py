@@ -818,18 +818,22 @@ class TestCase(unittest.TestCase):
     def test_every_route_answers_json(self):
         """One decorator, one contract: no request turns a route into a 500.
 
-        Sent an empty body, every handler stumbles on a missing key, and the
+        Sent an empty body, every handler stumbles on a missing key; sent a
+        body that is not JSON, the decoding itself fails. Either way the
         client must still read a JSON body from a 200 answer.
         """
         disabled = plugin.SCHEDULE_DISABLED
         plugin.SCHEDULE_DISABLED = SCHEDULE + ".disabled"
         self.assertTrue(cli.app.routes)
         try:
-            for route in cli.app.routes:
-                path = route.rule.replace("<name>", PREFIX_TEST_VOLUME + "nothing")
-                resp = self.app.request(path, method=route.method, body=b"", expect_errors=True)
-                self.assertEqual(resp.status_int, 200, path)
-                self.assertIsInstance(jsonloads(resp.body), dict, path)
+            for body in (b"", b"{not json"):
+                for route in cli.app.routes:
+                    path = route.rule.replace("<name>", PREFIX_TEST_VOLUME + "nothing")
+                    resp = self.app.request(
+                        path, method=route.method, body=body, expect_errors=True
+                    )
+                    self.assertEqual(resp.status_int, 200, path)
+                    self.assertIsInstance(jsonloads(resp.body), dict, path)
         finally:
             with suppress(OSError):
                 os.rename(plugin.SCHEDULE_DISABLED, SCHEDULE)

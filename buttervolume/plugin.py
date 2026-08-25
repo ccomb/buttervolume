@@ -205,13 +205,16 @@ def validate_hostname(hostname):
     return hostname
 
 
-def answer(handler, req, kw):
-    """Turn whatever the handler does into the response body.
+def answer(handler, kw):
+    """Turn whatever this request does into the response body.
 
     An error is a non-empty "Err" key, because that is all the client knows
-    how to read: a handler that raises must not become a 500.
+    how to read: nothing here, not even a body that is not JSON, must become
+    a 500.
     """
     try:
+        req = json.loads(request.body.read().decode() or "{}")
+        log.debug("Request: %s %s", request.path, req)
         result = handler(req, **kw)
         return result if isinstance(result, dict) else {"Err": ""}
     except (
@@ -242,9 +245,7 @@ def route(path, method="POST"):
         @bottle_route(path, [method])
         @wraps(handler)
         def serve(**kw):
-            req = json.loads(request.body.read().decode() or "{}")
-            log.debug("Request: %s %s", request.path, req)
-            resp = json.dumps(answer(handler, req, kw))
+            resp = json.dumps(answer(handler, kw))
             log.debug("Response: %s", resp)
             return resp
 
