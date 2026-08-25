@@ -12,7 +12,7 @@ import weakref
 from contextlib import suppress
 from datetime import datetime, timedelta
 from os.path import join
-from subprocess import check_output, run
+from subprocess import CalledProcessError, check_output, run
 from unittest.mock import MagicMock, patch
 
 from webtest import TestApp
@@ -57,7 +57,7 @@ class TestCase(unittest.TestCase):
                             if os.path.isdir(item_path):
                                 # Try BTRFS subvolume deletion first
                                 try:
-                                    btrfs.Subvolume(item_path).delete(check=False)
+                                    btrfs.Subvolume(item_path).delete()
                                 except Exception:
                                     # If BTRFS deletion fails, try regular directory removal
 
@@ -636,7 +636,7 @@ class TestCase(unittest.TestCase):
                         item_path = join(SNAPSHOTS_PATH, item)
                         # Continue cleanup even if individual items fail
                         with suppress(Exception):
-                            btrfs.Subvolume(item_path).delete(check=False)
+                            btrfs.Subvolume(item_path).delete()
 
         self.create_20_hourly_snapshots(name)
         # run the purge with a simple save pattern (2h only)
@@ -706,6 +706,19 @@ class TestCase(unittest.TestCase):
         self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps - 18)
         cleanup_snapshots()
         self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name}))
+
+    def test_run_safe_typed_error(self):
+        """A failed command raises the requested type, and says which command failed"""
+        missing = join(VOLUMES_PATH, "there_is_no_such_volume")
+        with self.assertRaises(btrfs.BtrfsSubvolumeError) as caught:
+            btrfs.run_safe(
+                ["btrfs", "subvolume", "show", missing],
+                timeout=btrfs.SHOW_TIMEOUT,
+                error=btrfs.BtrfsSubvolumeError,
+            )
+        self.assertIn(missing, str(caught.exception))
+        # the original failure stays reachable instead of being swallowed
+        self.assertIsInstance(caught.exception.__cause__, CalledProcessError)
 
     def test_compute_purge(self):
         now = datetime.now()
