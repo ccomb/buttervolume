@@ -16,11 +16,9 @@ CHANGELOG
   converted, leaves its date behind: it costs a line, and that date is what
   comes back if the job comes back.
 
-- A scheduled purge that failed is now tried again at the next scheduler
-  round. Its date was written down whether it had worked or not, so a failure
 - A scheduled job the running daemon has never run now runs at once, instead
-  of starting a day late. The scheduler keeps in memory when each job last ran
-  and forgets it when it stops, and for a job it had never seen it pretended
+  of starting a day late. The scheduler kept in memory when each job last ran
+  and forgot it when it stopped, and for a job it had never seen it pretended
   the last run was exactly one day old. A job of a shorter period therefore
   started immediately, while a weekly one waited six days after every restart
   and a monthly one twenty-nine, without a word.
