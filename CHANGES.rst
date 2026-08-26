@@ -10,6 +10,10 @@ CHANGELOG
   a bare HTTP 500 on an unexpected error, which no client of this API knows how
   to read.
 
+- A purge pattern naming a unit that does not exist now says so: ``5x`` is
+  answered ``unknown unit 'x'`` instead of a bare ``'x'``, and the command line
+  refuses it without asking the server.
+
 - The chattr call enabling compression no longer goes through a shell with the
   volume path interpolated in the command line.
 - Snapshot names received through the API are now validated like volume names:

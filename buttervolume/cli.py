@@ -20,6 +20,7 @@ from requests.exceptions import ConnectionError
 from waitress import serve
 from webtest import TestApp
 
+from buttervolume import ValidationError
 from buttervolume.plugin import (
     FIELDS,
     LOGLEVEL,
@@ -30,9 +31,8 @@ from buttervolume.plugin import (
     TIMER,
     USOCKET,
     VOLUMES_PATH,
-    convert_purge_pattern,
-    validate_purge_pattern,
 )
+from buttervolume.purge import Pattern
 
 VERSION = "3.13.0"
 logging.basicConfig(level=LOGLEVEL)
@@ -134,17 +134,17 @@ def _auto_convert_old_patterns():
             if action.startswith("purge:"):
                 _, pattern = action.split(":", 1)
                 try:
-                    warning = validate_purge_pattern(pattern, allow_backward_compat=True)
-                    if warning:
-                        converted_str = convert_purge_pattern(pattern)
-                        new_action = f"purge:{converted_str}"
-                        updates.append((name, action, new_action))
-                        needs_conversion = True
-                        print(
-                            f"Found deprecated pattern for volume '{name}': '{pattern}' -> '{converted_str}'"
-                        )
-                except Exception:
-                    pass
+                    parsed = Pattern.parse(pattern)
+                except ValidationError:
+                    continue
+                if parsed.deprecated:
+                    new_action = f"purge:{parsed.text}"
+                    updates.append((name, action, new_action))
+                    needs_conversion = True
+                    print(
+                        f"Found deprecated pattern for volume '{name}': "
+                        f"'{pattern}' -> '{parsed.text}'"
+                    )
 
     if not needs_conversion:
         print("No deprecated patterns found in schedule.")
@@ -209,12 +209,12 @@ def scheduled(args):
                 if action.startswith("purge:"):
                     _, pattern = action.split(":", 1)
                     try:
-                        warning = validate_purge_pattern(pattern, allow_backward_compat=True)
-                        if warning:
-                            deprecated_patterns.append((job["Name"], action, pattern))
-                            status += " (deprecated pattern)"
-                    except Exception:
-                        pass
+                        deprecated = Pattern.parse(pattern).deprecated
+                    except ValidationError:
+                        deprecated = None
+                    if deprecated:
+                        deprecated_patterns.append((job["Name"], action, pattern))
+                        status += " (deprecated pattern)"
 
                 formatted_jobs.append(f"{job['Action']} {job['Timer']} {job['Name']} {status}")
 
@@ -423,20 +423,21 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                         pattern,
                     )
 
-                    # Check for deprecated patterns and warn, but continue execution
+                    # A deprecated pattern is converted and reported, not refused
                     try:
-                        warning = validate_purge_pattern(pattern, allow_backward_compat=True)
-                        if warning:
-                            log.warning(warning)
-                            # Use the converted pattern
-                            actual_pattern = convert_purge_pattern(pattern)
-                        else:
-                            actual_pattern = pattern
-                    except Exception as e:
+                        parsed = Pattern.parse(pattern)
+                    except ValidationError as e:
                         log.error(f"Invalid purge pattern '{pattern}': {e}")
                         continue
+                    if parsed.deprecated:
+                        log.warning(
+                            "Converting deprecated pattern '%s' to '%s'. Please update your "
+                            "schedule using 'buttervolume scheduled --auto-convert-old-patterns'.",
+                            parsed.deprecated,
+                            parsed.text,
+                        )
 
-                    purge(Arg(name=[name], pattern=[actual_pattern], dryrun=False), test=test)
+                    purge(Arg(name=[name], pattern=[parsed.text], dryrun=False), test=test)
                     log.info("Finished purging")
                     schedule_log[action][name] = now
                 if action.startswith("synchronize:"):
