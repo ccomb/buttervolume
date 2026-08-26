@@ -2,8 +2,9 @@
 
 Most tests post to the plugin the way Docker does, then check what came back
 and what the snapshots directory holds, so they need a real BTRFS filesystem:
-``./test_local.sh`` sets one up. The ones that need no filesystem at all sit in
-their own classes at the bottom and read names and patterns directly.
+``./test_local.sh`` sets one up. The ones that need no BTRFS sit in their own
+classes at the bottom: they read names, patterns and schedule lines directly,
+on nothing more than a temporary file.
 """
 
 import json
@@ -40,7 +41,7 @@ from buttervolume.plugin import (
     VOLUMES_PATH,
 )
 from buttervolume.purge import Pattern, compute_purges
-from buttervolume.schedule import Job
+from buttervolume.schedule import Entry, Job, read_schedule, write_schedule
 
 # check that the target dir is btrfs
 SCHEDULE = plugin.SCHEDULE = tempfile.mkstemp()[1]
@@ -1346,6 +1347,70 @@ class TestScheduledJob(unittest.TestCase):
         ):
             with self.assertRaises(ValidationError):
                 Job.parse(action)
+
+
+class TestScheduleFile(unittest.TestCase):
+    """The lines of the schedule file, read and written in a single place"""
+
+    def schedule_file(self, content):
+        path = os.path.join(self.tmp, "schedule.csv")
+        with open(path, "w") as f:
+            f.write(content)
+        return path
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.tmp = self.tmpdir.name
+        self.addCleanup(self.tmpdir.cleanup)
+
+    def test_a_line_survives_being_read_and_written_back(self):
+        path = self.schedule_file("www,snapshot,60,True\r\nwww,purge:2h,120,False\r\n")
+        entries = read_schedule(path)
+        self.assertEqual(entries[0], Entry("www", "snapshot", "60", "True"))
+        self.assertTrue(entries[0].enabled)
+        self.assertFalse(entries[1].enabled)
+        write_schedule(path, entries)
+        with open(path, newline="") as f:
+            self.assertEqual(f.read(), "www,snapshot,60,True\r\nwww,purge:2h,120,False\r\n")
+
+    def test_the_api_says_a_line_the_way_it_always_did(self):
+        """Clients read these four keys, and read Active as a word, not a boolean"""
+        path = self.schedule_file("www,snapshot,60,False\r\n")
+        self.assertEqual(
+            read_schedule(path)[0].fields,
+            {"Name": "www", "Action": "snapshot", "Timer": "60", "Active": "False"},
+        )
+
+    def test_a_line_nobody_can_read_the_action_of_is_still_a_line(self):
+        """An older version wrote it, and it must stay listable and deletable"""
+        path = self.schedule_file("www,replicat:node2,60,True\r\n")
+        entry = read_schedule(path)[0]
+        self.assertEqual(entry.action, "replicat:node2")
+        with self.assertRaises(ValidationError):
+            Job.parse(entry.action)
+
+    def test_a_line_that_has_not_four_columns_is_refused(self):
+        for content in ("www,snapshot,60\r\n", "www,snapshot,60,True,extra\r\n"):
+            with self.assertRaises(ValidationError):
+                read_schedule(self.schedule_file(content))
+
+    def test_a_schedule_file_that_is_not_there_says_so(self):
+        """Each caller answers that differently, so it is not decided here"""
+        with self.assertRaises(FileNotFoundError):
+            read_schedule(os.path.join(self.tmp, "nothing.csv"))
+
+    def test_converting_the_old_patterns_leaves_every_other_line_alone(self):
+        """Including a line whose action nobody can read: this converts, it does not clean up"""
+        path = self.schedule_file(
+            "www,purge:2h:2h,60,True\r\nwww,replicat:node2,60,True\r\nwww,snapshot,60,False\r\n"
+        )
+        with patch.object(cli, "SCHEDULE", path), patch("builtins.input", lambda: "y"):
+            self.assertTrue(cli._auto_convert_old_patterns())
+        with open(path, newline="") as f:
+            self.assertEqual(
+                f.read(),
+                "www,purge:2h,60,True\r\nwww,replicat:node2,60,True\r\nwww,snapshot,60,False\r\n",
+            )
 
 
 class TemporaryDirectory(tempfile.TemporaryDirectory):

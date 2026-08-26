@@ -8,18 +8,18 @@ the ``Err`` field of a 200 answer, which is the only shape a client can read.
 This is also where the directories are configured, so this is where a name
 turns into a path on disk, and where it is validated as it does. What a name is
 worth is decided in ``names.py``, what a retention pattern says in ``purge.py``,
-what a scheduled action asks for in ``schedule.py``; all three are pure and know
-nothing of these directories.
+what a scheduled action asks for in ``schedule.py``; none of them knows these
+directories, and the schedule file is read and written there rather than here.
 """
 
 import configparser
-import csv
 import json
 import logging
 import os
 import subprocess
 import tempfile
 import time
+from dataclasses import replace
 from datetime import datetime
 from functools import wraps
 from os.path import basename, dirname, join
@@ -47,7 +47,7 @@ from buttervolume.names import (
     validate_volume_name,
 )
 from buttervolume.purge import Pattern, compute_purges
-from buttervolume.schedule import Job
+from buttervolume.schedule import Entry, Job, read_schedule, write_schedule
 
 config = configparser.ConfigParser()
 config.read("/etc/buttervolume/config.ini")
@@ -64,7 +64,6 @@ SNAPSHOTS_PATH = getconfig(config, "SNAPSHOTS_PATH", "/var/lib/buttervolume/snap
 TEST_REMOTE_PATH = getconfig(config, "TEST_REMOTE_PATH", "/var/lib/buttervolume/received/")
 SCHEDULE = getconfig(config, "SCHEDULE", "/etc/buttervolume/schedule.csv")
 SCHEDULE_DISABLED = f"{SCHEDULE}.disabled"
-FIELDS = ["Name", "Action", "Timer", "Active"]
 # Support both old and new plugin names for backward compatibility
 DRIVERNAME = getconfig(config, "DRIVERNAME", "ccomb/buttervolume:latest")
 LEGACY_DRIVERNAME = "anybox/buttervolume:latest"
@@ -515,10 +514,7 @@ def schedule(req):
         os.makedirs(dirname(SCHEDULE), exist_ok=True)
         with open(SCHEDULE, "w") as f:
             f.write("")
-    with open(SCHEDULE) as f:
-        schedule = {
-            (line["Name"], line["Action"]): line for line in csv.DictReader(f, fieldnames=FIELDS)
-        }
+    schedule = {(entry.name, entry.action): entry for entry in read_schedule(SCHEDULE)}
 
     if timer in ("pause", "resume", "0", "delete"):
         # These name a line that is already written, whatever it says: a job
@@ -527,9 +523,9 @@ def schedule(req):
         if (name, action) not in schedule:
             raise ValidationError(f"No '{action}' of '{name}' is scheduled")
         if timer == "pause":
-            schedule[(name, action)]["Active"] = False
+            schedule[(name, action)] = replace(schedule[(name, action)], active="False")
         elif timer == "resume":
-            schedule[(name, action)]["Active"] = True
+            schedule[(name, action)] = replace(schedule[(name, action)], active="True")
         else:
             del schedule[(name, action)]
     elif timer.isdecimal() and int(timer) > 0:
@@ -537,20 +533,14 @@ def schedule(req):
         # raises, and the scheduler reads this timer back with int()
         validate_volume_name(name)
         Job.parse(action)
-        schedule[(name, action)] = {
-            "Name": name,
-            "Action": action,
-            "Timer": timer,
-            "Active": True,
-        }
+        schedule[(name, action)] = Entry(name, action, timer, "True")
     else:
         raise ValidationError(
             f"Invalid timer '{timer}'. It must be a number of minutes, or "
             "'pause', 'resume', or '0' or 'delete' to unschedule"
         )
 
-    with open(SCHEDULE, "w") as f:
-        csv.DictWriter(f, fieldnames=FIELDS).writerows(schedule.values())
+    write_schedule(SCHEDULE, schedule.values())
     return {"Err": ""}
 
 
@@ -561,8 +551,7 @@ def scheduled(_):
         return {"Err": "Schedule is globally paused"}
     schedule = []
     if os.path.exists(SCHEDULE):
-        with open(SCHEDULE) as f:
-            schedule = list(csv.DictReader(f, fieldnames=FIELDS))
+        schedule = [entry.fields for entry in read_schedule(SCHEDULE)]
     return {"Err": "", "Schedule": schedule}
 
 
