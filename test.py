@@ -1,3 +1,11 @@
+"""The whole test suite, driven through ``webtest`` against the app.
+
+Most tests post to the plugin the way Docker does, then check what came back
+and what the snapshots directory holds, so they need a real BTRFS filesystem:
+``./test_local.sh`` sets one up. The ones that need no filesystem at all sit in
+their own classes at the bottom and read names and patterns directly.
+"""
+
 import json
 import logging
 import os

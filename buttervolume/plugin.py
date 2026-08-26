@@ -1,3 +1,16 @@
+"""The Docker Volume Plugin HTTP API, and where a name becomes a path.
+
+Every endpoint is a module-level ``@route(...)`` below, and that list of
+decorators is the authoritative route list. ``@route`` is defined here too, and
+is not Bottle's: it decodes the request, logs it, and turns any failure into
+the ``Err`` field of a 200 answer, which is the only shape a client can read.
+
+This is also where the directories are configured, so this is where a name
+turns into a path on disk, and where it is validated as it does. What a name is
+worth is decided in ``names.py``, what a retention pattern says in ``purge.py``;
+both are pure and know nothing of these directories.
+"""
+
 import configparser
 import csv
 import json

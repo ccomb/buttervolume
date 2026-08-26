@@ -5,29 +5,14 @@ subvolumes: snapshot, restore, clone, replicate. Python, Bottle, argparse.
 
 ## Finding your way around
 
+Every module opens with a docstring saying what it is for and what belongs in
+it. Read that one before adding to the module, and correct it there rather than
+describing the module here. This file holds the practices; a map of the code
+here would go stale the first time someone forgets to update it.
+
 - `README.rst` is the user manual: install, CLI usage, configuration, volume
   migration. Never duplicate it here; fix it there when it is wrong.
-- `buttervolume/plugin.py`: the Docker Volume Plugin HTTP API. Every endpoint is
-  a module-level `@route(...)` decorator there, and that list of decorators is
-  the authoritative route list. `@route` is defined there too, and is not
-  Bottle's: it decodes the request, logs it, and turns any failure into the
-  `Err` field of a 200 answer, which is the only shape a client can read.
-- `buttervolume/names.py`: what a volume name and a snapshot name are worth.
-  `volume@timestamp`, plus `@host` for the trace of a send, is read and written
-  here alone, and the validation lives here too. Pure functions: no disk, no
-  configuration, the date format arrives as an argument. The paths stay in
-  `plugin.py`, which is where the directories are configured, and a name is
-  validated there as it becomes a path.
-- `buttervolume/__init__.py`: the errors the API answers with. They sit below
-  everything so that both `names.py` and `plugin.py` can raise them.
-- `buttervolume/btrfs.py`: the subvolume operations, and `run_safe`, the guarded
-  way to call the `btrfs` command. One path escapes it and needs the same care:
-  `run_btrfs_send_receive` in `plugin.py` builds its own send and receive to
-  pipe them over SSH.
-- `buttervolume/cli.py`: the argparse commands, the scheduler thread, and the
-  waitress server that answers Docker on the unix socket.
-- `test.py`: the whole test suite, driven through `webtest` against the app.
-- `CHANGES.rst`: the changelog, one entry per user-visible change.
+- `CHANGES.rst` is the changelog, one entry per user-visible change.
 
 ## Commands
 
@@ -79,5 +64,6 @@ uv run ruff check . && uv run ruff format .
   shows. No em dashes.
 - `git add` names its files; never `git add -A`.
 - Re-read this file and `README.rst` before an important commit, and correct
-  them as soon as a sentence contradicts the code. Adding an endpoint or a
-  command that follows the conventions is not a reason to grow a list here.
+  them as soon as a sentence contradicts the code. Adding a module, an endpoint
+  or a command is not a reason to grow this file: say it in the module's
+  docstring, and here only when it changes a practice.
