@@ -496,10 +496,10 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None):
                 log.warning("Skipping the unknown action %s of %s: %s", action, name, e)
                 continue
             now = datetime.now()
-            # just starting, we consider beeing late on snapshots
-            schedule_log.setdefault(action, {})
-            schedule_log[action].setdefault(name, now - timedelta(1))
-            if not is_due(entry, schedule_log[action][name], now):
+            # a line this scheduler never ran is due: it is the first thing
+            # a freshly started daemon owes the volumes it was given
+            last = schedule_log.setdefault(action, {}).get(name)
+            if last is not None and not is_due(entry, last, now):
                 continue
             # the date a job answered for, so one that failed and can be
             # tried again comes back at the next round

@@ -1065,6 +1065,24 @@ class TestCase(unittest.TestCase):
         snapshots = [s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")]
         self.assertEqual(len(snapshots), 1)
 
+    def test_a_line_the_scheduler_never_ran_starts_at_once(self):
+        """A weekly job used to wait six days after every restart
+
+        The scheduler wrote down exactly one day of lateness for a line it had
+        never seen, so a period longer than a day started late by the whole
+        difference, and nothing said so.
+        """
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        weekly = 7 * 24 * 60
+        with open(SCHEDULE, "w") as f:
+            f.write(f"{name},snapshot,{weekly},True\n")
+
+        runjobs(config=SCHEDULE, test=True, schedule_log={})
+
+        snapshots = os.listdir(SNAPSHOTS_PATH)
+        self.assertTrue(any(snap.startswith(name + "@") for snap in snapshots))
+
     def test_an_unknown_scheduled_action_is_reported(self):
         """A misspelled action in the schedule must be said out loud
 
@@ -1433,11 +1451,6 @@ class TestWhatIsDue(unittest.TestCase):
     def test_a_line_whose_timer_has_elapsed_is_due(self):
         now = datetime(2026, 8, 26, 12, 0)
         self.assertTrue(is_due(self.hourly(), now - timedelta(minutes=60), now))
-
-    def test_a_line_the_scheduler_has_never_seen_is_due(self):
-        """A daemon that just started writes down a day of lateness for it"""
-        now = datetime(2026, 8, 26, 12, 0)
-        self.assertTrue(is_due(self.hourly(), now - timedelta(days=1), now))
 
 
 class TestRunningAJob(unittest.TestCase):
