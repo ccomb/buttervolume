@@ -499,14 +499,13 @@ def runjobs(config=SCHEDULE, test=False, last_runs=LAST_RUNS):
             log.warning("No config file %s", config)
         return
     dates = read_last_runs(last_runs) if exists(last_runs) else {}
-    name = action = timer = ""
     # run each action in the schedule if time is elapsed since the last one
     for row in read_rows(config):
         try:
             # read here rather than in one go above: a line nobody can read
             # must not stop the lines that follow it
             entry = Entry.parse(row)
-            name, action, timer = entry.name, entry.action, entry.timer
+            name, action = entry.name, entry.action
             if not entry.enabled:
                 log.info(f"{action} of {name} is disabled")
                 continue
@@ -526,26 +525,23 @@ def runjobs(config=SCHEDULE, test=False, last_runs=LAST_RUNS):
             if run_job(job, name, test=test):
                 dates[action][name] = now
                 write_last_runs(last_runs, dates)
+        # the line at fault is the one being read, not the fields of the last
+        # one read whole: a line nobody could read never filled them
         except CalledProcessError as e:
             log.error(
-                "Error processing scheduler action file %s "
-                "name=%s, action=%s, timer=%s, "
+                "Error processing scheduler action file %s line=%s, "
                 "exception=%s, stdout=%s, stderr=%s",
                 config,
-                name,
-                action,
-                timer,
+                row,
                 str(e),
                 e.stdout,
                 e.stderr,
             )
         except Exception as e:
             log.error(
-                "Error processing scheduler action file %s name=%s, action=%s, timer=%s\n%s",
+                "Error processing scheduler action file %s line=%s\n%s",
                 config,
-                name,
-                action,
-                timer,
+                row,
                 str(e),
             )
 
