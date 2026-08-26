@@ -8,7 +8,8 @@ two hours and deletes the rest.
 Older versions accepted ``2h:2h`` for that last one. Such a pattern is read
 back here as the ``2h`` it means, and the original spelling is kept in
 ``deprecated`` so the caller can decide what to do with it: an immediate purge
-refuses it, the scheduler converts it and says so.
+refuses it, a schedule still accepts it as it is written, and the scheduler
+converts it and says so at every run.
 
 Nothing here touches the disk and nothing here reads the configuration: the
 date format arrives as an argument, as it does for a snapshot name.

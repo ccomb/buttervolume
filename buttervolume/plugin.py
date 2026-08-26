@@ -7,8 +7,9 @@ the ``Err`` field of a 200 answer, which is the only shape a client can read.
 
 This is also where the directories are configured, so this is where a name
 turns into a path on disk, and where it is validated as it does. What a name is
-worth is decided in ``names.py``, what a retention pattern says in ``purge.py``;
-both are pure and know nothing of these directories.
+worth is decided in ``names.py``, what a retention pattern says in ``purge.py``,
+what a scheduled action asks for in ``schedule.py``; all three are pure and know
+nothing of these directories.
 """
 
 import configparser
@@ -46,6 +47,7 @@ from buttervolume.names import (
     validate_volume_name,
 )
 from buttervolume.purge import Pattern, compute_purges
+from buttervolume.schedule import Job
 
 config = configparser.ConfigParser()
 config.read("/etc/buttervolume/config.ini")
@@ -517,19 +519,35 @@ def schedule(req):
         schedule = {
             (line["Name"], line["Action"]): line for line in csv.DictReader(f, fieldnames=FIELDS)
         }
-        if timer == "pause" and (name, action) in schedule:
+
+    if timer in ("pause", "resume", "0", "delete"):
+        # These name a line that is already written, whatever it says: a job
+        # this endpoint once accepted must stay possible to pause and to
+        # delete. Only the line named is looked at, never the others.
+        if (name, action) not in schedule:
+            raise ValidationError(f"No '{action}' of '{name}' is scheduled")
+        if timer == "pause":
             schedule[(name, action)]["Active"] = False
-        elif timer == "resume" and (name, action) in schedule:
+        elif timer == "resume":
             schedule[(name, action)]["Active"] = True
-        elif timer in ("0", "delete") and (name, action) in schedule:
+        else:
             del schedule[(name, action)]
-        elif timer.isnumeric() and timer not in ("0", "delete"):
-            schedule[(name, action)] = {
-                "Name": name,
-                "Action": action,
-                "Timer": timer,
-                "Active": True,
-            }
+    elif timer.isdecimal() and int(timer) > 0:
+        # isdecimal, not isnumeric: "²".isnumeric() is True and int("²")
+        # raises, and the scheduler reads this timer back with int()
+        validate_volume_name(name)
+        Job.parse(action)
+        schedule[(name, action)] = {
+            "Name": name,
+            "Action": action,
+            "Timer": timer,
+            "Active": True,
+        }
+    else:
+        raise ValidationError(
+            f"Invalid timer '{timer}'. It must be a number of minutes, or "
+            "'pause', 'resume', or '0' or 'delete' to unschedule"
+        )
 
     with open(SCHEDULE, "w") as f:
         csv.DictWriter(f, fieldnames=FIELDS).writerows(schedule.values())
