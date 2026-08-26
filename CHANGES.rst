@@ -4,6 +4,14 @@ CHANGELOG
 3.13 (unreleased)
 *****************
 
+- Saving a scheduled job no longer risks losing the whole schedule.
+  ``schedule.csv`` was emptied before being written back, and it is rewritten
+  in full every time a job is added, paused, resumed or removed, so an
+  interruption in that window left an empty or half-written file. Nobody would
+  notice: the next scheduler run reported no config file, or read half of the
+  jobs, and the scheduled snapshots stopped in silence. The file is now written
+  beside itself and renamed over the old one, which happens in one go.
+
 - The scheduler now reports a line of ``schedule.csv`` whose action it does
   not know, instead of skipping it silently at every run. The guard meant to
   do this could never fire, so a misspelled ``replicat:host`` looked exactly

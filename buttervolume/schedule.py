@@ -19,10 +19,16 @@ job out of it is a separate step nobody is forced to take.
 format is known. They are thin: turning a row into an ``Entry`` is pure, only
 the opening of the file is not. ``read_schedule`` says nothing about a file
 that is not there, because its callers answer that differently and it is their
-decision, not this module's.
+decision, not this module's. ``write_schedule`` replaces the file in one go,
+because it is the only state the plugin keeps outside BTRFS and a half-written
+schedule is a lost one.
 """
 
 import csv
+import os
+import stat
+import tempfile
+from contextlib import suppress
 from dataclasses import dataclass
 
 from buttervolume import ValidationError
@@ -143,5 +149,42 @@ def read_schedule(path):
 
 
 def write_schedule(path, entries):
-    with open(path, "w", newline="") as f:
-        csv.writer(f).writerows(entry.row for entry in entries)
+    """Replace the file in one go, or leave it exactly as it was.
+
+    Writing in place would empty the file before knowing what goes back in it,
+    and an interruption there loses the whole schedule. So the lines are
+    written next to it and the file is renamed over the old one, which is
+    atomic within a filesystem, hence the temporary file in the same directory.
+
+    A rename replaces a name, where the previous write followed it: the file
+    written is the one the path really designates, so a schedule reached
+    through a symbolic link keeps being the file it points at.
+
+    A machine that stops between the temporary file and the rename leaves that
+    temporary file behind. Nothing here removes it: it is named after the
+    schedule so that whoever finds it knows what it is, and deleting files
+    nobody asked to delete is how a schedule gets lost.
+    """
+    path = os.path.realpath(path)
+    # the name says whose leftover it is, on the day a machine stops between
+    # this line and the rename below and leaves one behind
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix="schedule.")
+    try:
+        with os.fdopen(fd, "w", newline="") as f:
+            csv.writer(f).writerows(entry.row for entry in entries)
+            f.flush()
+            # without this, a crash can bring the rename to the disk before
+            # the lines it renames, which is the empty file we are avoiding
+            os.fsync(f.fileno())
+        # renaming gives a new file where writing in place kept the old one,
+        # so the mode and the hands of the one being replaced are put back. A
+        # temporary file is readable by nobody else, and a schedule that names
+        # volumes and hosts has no reason to be born more open than that
+        with suppress(FileNotFoundError):
+            previous = os.stat(path)
+            os.chmod(tmp, stat.S_IMODE(previous.st_mode))
+            os.chown(tmp, previous.st_uid, previous.st_gid)
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
