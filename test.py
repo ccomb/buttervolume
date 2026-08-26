@@ -1679,6 +1679,14 @@ class TestLastRunsFile(unittest.TestCase):
 
         self.assertEqual(dates, {"replicate:node2": {"www": datetime(2026, 8, 26, 12, 0)}})
 
+    def test_a_date_carrying_a_time_zone_is_refused_like_an_unreadable_one(self):
+        """The clock it would be compared to has none, and comparing them raises"""
+        with open(self.path, "w", newline="") as f:
+            f.write("www,snapshot,2026-08-26T12:00:00+02:00\r\n")
+
+        with self.assertLogs(level=logging.WARNING):
+            self.assertEqual(read_last_runs(self.path), {})
+
     def test_a_file_that_is_not_there_says_so(self):
         """A first start and a file somebody deleted are the caller's business"""
         with self.assertRaises(FileNotFoundError):

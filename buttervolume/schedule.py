@@ -219,10 +219,24 @@ def read_last_runs(path):
     for row in read_rows(path):
         try:
             name, action, date = row
-            last_runs.setdefault(action, {})[name] = datetime.fromisoformat(date)
+            last_runs.setdefault(action, {})[name] = read_date(date)
         except ValueError as e:
             log.warning("Skipping the unreadable line %s of %s: %s", row, path, e)
     return last_runs
+
+
+def read_date(text):
+    """A date this file holds, refused unless it can be compared to the clock.
+
+    ``datetime.now()`` has no time zone, and comparing it to a date that has
+    one raises. Such a date would therefore be read without a word and stop
+    its job at every round, which is the one thing this file must not do, so
+    it is refused here and the line goes the way of an unreadable one.
+    """
+    date = datetime.fromisoformat(text)
+    if date.tzinfo is not None:
+        raise ValueError(f"'{text}' carries a time zone, and the clock it is compared to has none")
+    return date
 
 
 def write_last_runs(path, last_runs):
