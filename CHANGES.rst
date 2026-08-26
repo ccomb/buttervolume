@@ -4,6 +4,11 @@ CHANGELOG
 3.13 (unreleased)
 *****************
 
+- The scheduler now reports a line of ``schedule.csv`` whose action it does
+  not know, instead of skipping it silently at every run. The guard meant to
+  do this could never fire, so a misspelled ``replicat:host`` looked exactly
+  like a replication that ran on time.
+
 - Every endpoint now goes through a single decorator that decodes the request,
   logs it and turns any failure into the ``Err`` field of a 200 answer. Six
   routes, among them the scheduling ones and the snapshot send, used to answer

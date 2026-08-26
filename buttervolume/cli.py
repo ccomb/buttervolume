@@ -387,9 +387,6 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                 last = schedule_log[action][name]
                 if now < last + timedelta(minutes=int(timer)):
                     continue
-                if action not in schedule_log:
-                    log.warning("Skipping invalid action %s", action)
-                    continue
                 # choose and run the right action
                 if action == "snapshot":
                     log.info("Starting scheduled snapshot of %s", name)
@@ -399,7 +396,7 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                         continue
                     log.info("Successfully snapshotted to %s", snap)
                     schedule_log[action][name] = now
-                if action.startswith("replicate:"):
+                elif action.startswith("replicate:"):
                     if name in ReplicationInProgress:
                         log.warning(f"Replication of {name} already in progress, skipping.")
                         continue
@@ -429,7 +426,7 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                                 )
                     finally:
                         ReplicationInProgress.remove(name)
-                if action.startswith("purge:"):
+                elif action.startswith("purge:"):
                     _, pattern = action.split(":", 1)
                     log.info(
                         "Starting scheduled purge of %s with pattern %s",
@@ -454,7 +451,7 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                     purge(Arg(name=[name], pattern=[parsed.text], dryrun=False), test=test)
                     log.info("Finished purging")
                     schedule_log[action][name] = now
-                if action.startswith("synchronize:"):
+                elif action.startswith("synchronize:"):
                     log.info("Starting scheduled synchronization of %s", name)
                     hosts = action.split(":")[1].split(",")
                     # do a snapshot to save state before pulling data
@@ -463,6 +460,8 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                     sync(Arg(volumes=[name], hosts=hosts), test=test)
                     log.debug("End of %s synchronization from %s", name, hosts)
                     schedule_log[action][name] = now
+                else:
+                    log.warning("Skipping the unknown action %s of %s", action, name)
             except CalledProcessError as e:
                 log.error(
                     "Error processing scheduler action file %s "
