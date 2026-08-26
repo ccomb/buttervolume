@@ -1,11 +1,16 @@
 """The command line, the scheduler thread, and the server Docker talks to.
 
-Most commands are argparse subcommands that post to the plugin over the unix
-socket, so the command line is a client of the same API as Docker and reads the
-same answers. Three do not: ``run`` starts waitress on that socket with the
-scheduler thread beside it, ``init`` builds a BTRFS filesystem before any
-daemon exists, and ``scheduled --auto-convert-old-patterns`` rewrites
-``schedule.csv`` in place.
+Most commands are argparse subcommands that unpack what the terminal gave
+them, hand it to ``api.py`` and print what comes back, so the command line is
+a client of the same API as Docker and reads the same answers. Three do not:
+``run`` starts waitress on that socket with the scheduler thread beside it,
+``init`` builds a BTRFS filesystem before any daemon exists, and ``scheduled
+--auto-convert-old-patterns`` rewrites ``schedule.csv`` in place.
+
+Nothing here knows how that call travels. Where the socket is, and what an
+answer is shaped like, is ``api.py``'s business, and the scheduler below calls
+it the same way the commands do, with the volume's name rather than the
+namespace argparse would have built.
 
 The scheduler runs what is due in ``schedule.csv``: a snapshot, a replication,
 a synchronization or a purge. Reading that file, and reading what each of its
@@ -21,7 +26,6 @@ way live in memory, and a daemon that stops has none.
 """
 
 import argparse
-import json
 import logging
 import os
 import shutil
@@ -30,7 +34,6 @@ import subprocess
 import sys
 import threading
 import traceback
-import urllib.parse
 from contextlib import suppress
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -38,13 +41,10 @@ from functools import singledispatch
 from os.path import exists
 from subprocess import CalledProcessError
 
-import requests_unixsocket
-from bottle import app
-from requests.exceptions import ConnectionError
 from waitress import serve
-from webtest import TestApp
 
-from buttervolume import ReplicationError, ValidationError
+from buttervolume import ReplicationError, ValidationError, api
+from buttervolume.api import app
 from buttervolume.plugin import (
     LAST_RUNS,
     LOGLEVEL,
@@ -52,7 +52,6 @@ from buttervolume.plugin import (
     SNAPSHOTS_PATH,
     SOCKET,
     TIMER,
-    USOCKET,
     VOLUMES_PATH,
 )
 from buttervolume.purge import Pattern
@@ -73,83 +72,20 @@ from buttervolume.schedule import (
 VERSION = "3.13.0"
 logging.basicConfig(level=LOGLEVEL)
 log = logging.getLogger()
-app = app()
 
 
 ReplicationInProgress = set()
 
 
-class Session:
-    """wrapper for requests_unixsocket.Session"""
-
-    def __init__(self):
-        self.session = requests_unixsocket.Session()
-
-    def _log_connection_error(self):
-        """Log connection error with helpful guidance"""
-        log.error("Failed to connect to Buttervolume plugin.")
-
-        # Check if we're running in a container
-        if os.path.exists("/.dockerenv") or os.environ.get("BUTTERVOLUME_IN_CONTAINER"):
-            log.error("Running in container detected. To use buttervolume CLI in a container:")
-            log.error("1. Mount Docker socket: -v /var/run/docker.sock:/var/run/docker.sock")
-            log.error("2. Mount plugin sockets: -v /run/docker/plugins:/run/docker/plugins")
-            log.error("3. Or override socket path: -e BUTTERVOLUME_SOCKET=/path/to/btrfs.sock")
-        else:
-            log.error("You can start the plugin with: buttervolume run")
-            log.error("Or install the Docker plugin: docker plugin install ccomb/buttervolume")
-
-    def post(self, *a, **kw):
-        try:
-            return self.session.post(*a, **kw)
-        except ConnectionError:
-            self._log_connection_error()
-            return
-
-    def get(self, *a, **kw):
-        try:
-            return self.session.get(*a, **kw)
-        except ConnectionError:
-            self._log_connection_error()
-
-
-def get_from(resp, key):
-    """get specified key from plugin response output"""
-    if resp is None:
-        return False
-    try:  # bottle
-        content = resp.content
-    except Exception:  # TestApp
-        content = resp.body
-    if resp.status_code == 200:
-        error = json.loads(content.decode())["Err"]
-        if error:
-            log.error(error)
-            return False
-        return json.loads(content.decode()).get(key)
-    else:
-        log.error("%s: %s", resp.status_code, resp.reason)
-        return False
-
-
 def snapshot(args, test=False):
-    urlpath = "/VolumeDriver.Snapshot"
-    param = json.dumps({"Name": args.name[0]})
-    if test:
-        resp = TestApp(app).post(urlpath, param)
-    else:
-        resp = Session().post(f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}", param)
-    res = get_from(resp, "Snapshot")
+    res = api.snapshot(args.name[0], test=test)
     if res:
         print(res)
     return res
 
 
 def schedule(args):
-    urlpath = "/VolumeDriver.Schedule"
-    param = json.dumps({"Name": args.name[0], "Action": args.action[0], "Timer": args.timer[0]})
-    resp = Session().post(f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}", param)
-    return get_from(resp, "")
+    return api.schedule(args.name[0], args.action[0], args.timer[0])
 
 
 def _auto_convert_old_patterns():
@@ -208,9 +144,7 @@ def scheduled(args):
         return _auto_convert_old_patterns()
 
     if args.action == "list":
-        urlpath = "/VolumeDriver.Schedule.List"
-        resp = Session().get(f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}")
-        scheduled = get_from(resp, "Schedule")
+        scheduled = api.scheduled()
         if scheduled:
             formatted_jobs = []
             deprecated_patterns = []
@@ -245,113 +179,46 @@ def scheduled(args):
 
         return scheduled
     elif args.action == "pause":
-        resp = Session().post(
-            f"http+unix://{urllib.parse.quote_plus(USOCKET)}/VolumeDriver.Schedule.Pause",
-        )
-        return get_from(resp, "")
+        return api.schedule_pause()
     elif args.action == "resume":
-        resp = Session().post(
-            f"http+unix://{urllib.parse.quote_plus(USOCKET)}/VolumeDriver.Schedule.Resume",
-        )
-        return get_from(resp, "")
+        return api.schedule_resume()
 
 
 def snapshots(args):
-    resp = Session().get(
-        f"http+unix://{urllib.parse.quote_plus(USOCKET)}/VolumeDriver.Snapshot.List/{args.name}",
-    )
-    snapshots = get_from(resp, "Snapshots")
+    snapshots = api.snapshots(args.name)
     if snapshots:
         print("\n".join(snapshots))
     return snapshots
 
 
 def restore(args):
-    resp = Session().post(
-        f"http+unix://{urllib.parse.quote_plus(USOCKET)}/VolumeDriver.Snapshot.Restore",
-        json.dumps({"Name": args.name[0], "Target": args.target}),
-    )
-    res = get_from(resp, "VolumeBackup")
+    res = api.restore(args.name[0], args.target)
     if res:
         print(res)
     return res
 
 
 def clone(args):
-    resp = Session().post(
-        f"http+unix://{urllib.parse.quote_plus(USOCKET)}/VolumeDriver.Clone",
-        json.dumps({"Name": args.name[0], "Target": args.target}),
-    )
-    res = get_from(resp, "VolumeCloned")
+    res = api.clone(args.name[0], args.target)
     if res:
         print(res)
     return res
 
 
 def send(args, test=False):
-    urlpath = "/VolumeDriver.Snapshot.Send"
-    param = {"Name": args.snapshot[0], "Host": args.host[0]}
-    if test:
-        param["Test"] = True
-        resp = TestApp(app).post(urlpath, json.dumps(param))
-    else:
-        resp = Session().post(
-            f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}",
-            json.dumps(param),
-        )
-    # the endpoint answers with an empty payload, so the only thing to report
-    # is whether the job happened: get_from already logged the error.
-    return get_from(resp, "") is not False
+    return api.send(args.snapshot[0], args.host[0], test=test)
 
 
 def sync(args, test=False):
-    urlpath = "/VolumeDriver.Volume.Sync"
-    param = {"Volumes": args.volumes, "Hosts": args.hosts}
-    if test:
-        param["Test"] = True
-        resp = TestApp(app).post(urlpath, json.dumps(param))
-    else:
-        resp = Session().post(
-            f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}",
-            json.dumps(param),
-        )
-    # the endpoint answers with an empty payload, so the only thing to report
-    # is whether the job happened: get_from already logged the error.
-    return get_from(resp, "") is not False
+    return api.sync(args.volumes, args.hosts, test=test)
 
 
 def remove(args, test=False):
-    urlpath = "/VolumeDriver.Snapshot.Remove"
-    param = json.dumps({"Name": args.name[0]})
-    if test:
-        resp = TestApp(app).post(urlpath, param)
-    else:
-        resp = Session().post(f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}", param)
-    # the endpoint answers with an empty payload, so the only thing to report
-    # is whether the deletion happened: get_from already logged the error.
-    return get_from(resp, "") is not False
+    return api.remove(args.name[0], test=test)
 
 
 def purge(args, test=False):
-    urlpath = "/VolumeDriver.Snapshots.Purge"
-    param = {"Name": args.name[0], "Pattern": args.pattern[0], "Dryrun": args.dryrun}
-    if test:
-        param["Test"] = True
-        resp = TestApp(app).post(urlpath, json.dumps(param))
-    else:
-        resp = Session().post(
-            f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}",
-            json.dumps(param),
-        )
-    # the endpoint answers with an empty payload, so the only thing to report
-    # is whether the job happened: get_from already logged the error.
-    return get_from(resp, "") is not False
-
-
-class Arg:
-    def __init__(self, *_, **kw):
-        for k, v in kw.items():
-            setattr(self, k, v)
+    return api.purge(args.name[0], args.pattern[0], args.dryrun, test=test)
 
 
 def is_due(entry, last, now):
@@ -394,7 +261,7 @@ def run_job(job, name, test=False):
 @run_job.register
 def run_snapshot(job: Snapshot, name, test=False):
     log.info("Starting scheduled snapshot of %s", name)
-    snap = snapshot(Arg(name=[name]), test=test)
+    snap = api.snapshot(name, test=test)
     if not snap:
         log.info("Could not snapshot %s", name)
         return False
@@ -411,12 +278,12 @@ def run_replicate(job: Replicate, name, test=False):
     snap = None
     try:
         ReplicationInProgress.add(name)
-        snap = snapshot(Arg(name=[name]), test=test)
+        snap = api.snapshot(name, test=test)
         if not snap:
             log.info("Could not snapshot %s", name)
             return False
         log.info("Successfully snapshotted to %s", snap)
-        if not send(Arg(snapshot=[snap], host=[job.host]), test=test):
+        if not api.send(snap, job.host, test=test):
             # the same road as an exception: the error is already logged,
             # and the snapshot taken for this replication has no reason to stay
             raise ReplicationError(f"Could not send {snap} to {job.host}")
@@ -426,7 +293,7 @@ def run_replicate(job: Replicate, name, test=False):
         log.warning("Replication failed: %s", e)
         # remove snapshot that was created for the failed replication
         if snap:
-            if remove(Arg(name=[snap]), test=test):
+            if api.remove(snap, test=test):
                 log.info("Removed snapshot %s for failed replication", snap)
             else:
                 log.warning(
@@ -454,7 +321,7 @@ def run_purge(job: Purge, name, test=False):
             pattern.deprecated,
             pattern.text,
         )
-    if not purge(Arg(name=[name], pattern=[pattern.text], dryrun=False), test=test):
+    if not api.purge(name, pattern.text, dryrun=False, test=test):
         log.warning("Could not purge the snapshots of %s", name)
         return False
     log.info("Finished purging")
@@ -466,12 +333,15 @@ def run_synchronize(job: Synchronize, name, test=False):
     log.info("Starting scheduled synchronization of %s", name)
     hosts = list(job.hosts)
     # do a snapshot to save state before pulling data
-    snap = snapshot(Arg(name=[name]), test=test)
+    snap = api.snapshot(name, test=test)
     if not snap:
         log.info("Could not snapshot %s", name)
         return False
-    log.debug("Successfully snapshotted to %s", snap)
-    if sync(Arg(volumes=[name], hosts=hosts), test=test):
+    # said out loud, like the two other jobs that take one: this is the
+    # snapshot a pull stopped halfway is recovered from, and an administrator
+    # who has to go back to it needs to read its name somewhere
+    log.info("Successfully snapshotted to %s", snap)
+    if api.sync([name], hosts, test=test):
         log.debug("End of %s synchronization from %s", name, hosts)
     else:
         log.warning("Could not synchronize %s from %s", name, hosts)
