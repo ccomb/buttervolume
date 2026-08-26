@@ -1421,6 +1421,19 @@ class TestScheduleFile(unittest.TestCase):
         write_schedule(path, read_schedule(path))
         self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o640)
 
+    def test_writing_the_schedule_keeps_the_hands_of_the_file_it_replaces(self):
+        """Renaming gives a new file, where writing in place kept the old one"""
+        path = self.schedule_file("www,snapshot,60,True\r\n")
+        mine = os.stat(path).st_gid
+        # root belongs to its own group alone and may give a file to any other
+        other = next((g for g in os.getgroups() if g != mine), mine + 1)
+        try:
+            os.chown(path, -1, other)
+        except PermissionError:
+            self.skipTest("no other group to give the schedule to")
+        write_schedule(path, read_schedule(path))
+        self.assertEqual(os.stat(path).st_gid, other)
+
     def test_a_schedule_reached_through_a_symbolic_link_stays_that_file(self):
         """A rename replaces a name, so the link is followed before renaming"""
         target = os.path.join(self.tmp, "elsewhere.csv")

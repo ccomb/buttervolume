@@ -159,9 +159,16 @@ def write_schedule(path, entries):
     A rename replaces a name, where the previous write followed it: the file
     written is the one the path really designates, so a schedule reached
     through a symbolic link keeps being the file it points at.
+
+    A machine that stops between the temporary file and the rename leaves that
+    temporary file behind. Nothing here removes it: it is named after the
+    schedule so that whoever finds it knows what it is, and deleting files
+    nobody asked to delete is how a schedule gets lost.
     """
     path = os.path.realpath(path)
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".")
+    # the name says whose leftover it is, on the day a machine stops between
+    # this line and the rename below and leaves one behind
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix="schedule.")
     try:
         with os.fdopen(fd, "w", newline="") as f:
             csv.writer(f).writerows(entry.row for entry in entries)
@@ -169,11 +176,14 @@ def write_schedule(path, entries):
             # without this, a crash can bring the rename to the disk before
             # the lines it renames, which is the empty file we are avoiding
             os.fsync(f.fileno())
-        # the file being replaced keeps the mode it had; a temporary file is
-        # readable by nobody else, and a schedule that names volumes and hosts
-        # has no reason to be born more open than that
+        # renaming gives a new file where writing in place kept the old one,
+        # so the mode and the hands of the one being replaced are put back. A
+        # temporary file is readable by nobody else, and a schedule that names
+        # volumes and hosts has no reason to be born more open than that
         with suppress(FileNotFoundError):
-            os.chmod(tmp, stat.S_IMODE(os.stat(path).st_mode))
+            previous = os.stat(path)
+            os.chmod(tmp, stat.S_IMODE(previous.st_mode))
+            os.chown(tmp, previous.st_uid, previous.st_gid)
         os.replace(tmp, path)
     except BaseException:
         os.unlink(tmp)
