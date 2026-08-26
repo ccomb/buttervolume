@@ -9,6 +9,12 @@ CHANGELOG
   do this could never fire, so a misspelled ``replicat:host`` looked exactly
   like a replication that ran on time.
 
+- A scheduled replication or synchronization naming a host that Buttervolume
+  refuses, such as an SSH alias with an underscore, now stops and says so at
+  every run. Such a line could be written by an older version, and it never
+  replicated anything, because the send refused that host too; but it went on
+  snapshotting the volume every period while reporting a success.
+
 - Scheduling a job that nobody could run is now refused instead of answered
   with a success. A misspelled action such as ``replicat:host``, an unreadable
   retention pattern, an invalid volume name or a timer that is not a number of
