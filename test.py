@@ -1291,6 +1291,7 @@ class TestScheduledJob(unittest.TestCase):
         for action in (
             "",
             "replicat:node2",
+            "snapshot:",
             "snapshot:node2",
             "snapshots",
             "replicate",

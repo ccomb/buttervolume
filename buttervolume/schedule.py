@@ -28,8 +28,9 @@ class Job:
 
     @classmethod
     def parse(cls, action):
-        verb, _, rest = action.partition(":")
-        if verb == "snapshot" and not rest:
+        verb, colon, rest = action.partition(":")
+        # the colon, not the rest: "snapshot:" names no job either
+        if verb == "snapshot" and not colon:
             return Snapshot(action)
         if verb == "replicate":
             return Replicate(action, validate_hostname(rest))
