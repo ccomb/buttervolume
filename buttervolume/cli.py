@@ -12,8 +12,9 @@ a synchronization or a purge. Reading that file, and reading what each of its
 lines asks for, is ``schedule.py``'s business. What is left here is done in two
 steps that do not mix: ``is_due`` decides, from a line, a date and a clock,
 without touching anything; ``run_job`` does the work, one function per kind of
-job. ``schedule.csv`` is the only state the plugin keeps outside BTRFS, and
-when a job last ran is the only state it keeps in memory alone.
+job. ``schedule.csv`` is the only state the plugin keeps outside BTRFS; when
+a job last ran, and which replications are under way, live in memory alone and
+are forgotten when the daemon stops.
 """
 
 import argparse
