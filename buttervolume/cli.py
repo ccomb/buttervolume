@@ -1,3 +1,17 @@
+"""The command line, the scheduler thread, and the server Docker talks to.
+
+Most commands are argparse subcommands that post to the plugin over the unix
+socket, so the command line is a client of the same API as Docker and reads the
+same answers. Three do not: ``run`` starts waitress on that socket with the
+scheduler thread beside it, ``init`` builds a BTRFS filesystem before any
+daemon exists, and ``scheduled --auto-convert-old-patterns`` rewrites
+``schedule.csv`` in place.
+
+The scheduler reads ``schedule.csv`` and runs what is due there: a snapshot, a
+replication, a synchronization or a purge. That file is the only state the
+plugin keeps outside BTRFS.
+"""
+
 import argparse
 import csv
 import json

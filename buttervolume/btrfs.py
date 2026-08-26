@@ -1,3 +1,15 @@
+"""The subvolume operations, and the guarded way to call the ``btrfs`` command.
+
+Every call goes through ``run_safe``: no shell, a timeout each caller states
+for itself, and any failure raised as a typed error rather than returned as
+something the caller cannot tell apart from a result. One path escapes it and
+needs the same care: ``run_btrfs_send_receive`` in ``plugin.py`` builds its own
+send and receive to pipe them over SSH.
+
+Nothing here knows what a volume is, which is why ``BtrfsError`` lives here
+rather than with the errors the API answers with.
+"""
+
 import contextlib
 import os
 from subprocess import CalledProcessError, TimeoutExpired
