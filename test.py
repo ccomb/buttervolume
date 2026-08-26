@@ -1024,6 +1024,47 @@ class TestCase(unittest.TestCase):
             json.dumps({"Name": name, "Action": "purge:2h:2h", "Timer": 0}),
         )
 
+    def test_a_purge_that_failed_is_tried_again_at_the_next_round(self):
+        """A job whose date is written down anyway is a job nobody retries
+
+        The scheduler counted the period of a purge from the moment it ran it,
+        whether it worked or not, so a purge that failed went quiet until its
+        next turn, which is a day for most schedules.
+        """
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        with open(SCHEDULE, "w") as f:
+            f.write(f"{name},purge:2h,60,True\n")
+        schedule_log = {}
+
+        with patch("buttervolume.cli.purge", return_value=False) as failing_purge:
+            runjobs(config=SCHEDULE, test=True, schedule_log=schedule_log)
+            runjobs(config=SCHEDULE, test=True, schedule_log=schedule_log)
+
+        self.assertEqual(failing_purge.call_count, 2)
+
+    def test_a_synchronization_that_could_not_pull_waits_for_its_turn(self):
+        """A purge that failed can be tried again for free, a pull cannot
+
+        The snapshot taken before the pull holds the volume as it was before
+        rsync, and it is what a pull stopped halfway is recovered from, so it
+        stays. Coming back at the next round would therefore leave one
+        snapshot per minute behind while the other host is away.
+        """
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        with open(SCHEDULE, "w") as f:
+            f.write(f"{name},synchronize:localhost,60,True\n")
+        schedule_log = {}
+
+        with patch("buttervolume.cli.sync", return_value=False) as failing_sync:
+            runjobs(config=SCHEDULE, test=True, schedule_log=schedule_log)
+            runjobs(config=SCHEDULE, test=True, schedule_log=schedule_log)
+
+        self.assertEqual(failing_sync.call_count, 1)
+        snapshots = [s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")]
+        self.assertEqual(len(snapshots), 1)
+
     def test_an_unknown_scheduled_action_is_reported(self):
         """A misspelled action in the schedule must be said out loud
 

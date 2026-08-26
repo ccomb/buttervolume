@@ -362,12 +362,13 @@ def is_due(entry, last, now):
 def run_job(job, name, test=False):
     """Run one scheduled job on one volume, and say whether its turn is spent.
 
-    True means the job must not be tried again before its timer has elapsed
-    once more; False means the next scheduler round tries it again. The four
-    jobs below do not answer the same thing after a failure, and never have: a
-    snapshot or a replication that failed comes back at the next round, a purge
-    that failed waits for its next turn. Nobody decided that, and it is now
-    said in four visible places instead of being buried in one long branch.
+    The scheduler writes down the date of a job that answers True and counts
+    its timer from there, so a job that answers False comes back at the next
+    round instead of waiting a full period. Three of the four say plainly
+    whether they succeeded. The synchronization does not: it takes a snapshot
+    of the volume before rsync overwrites it, and that snapshot cannot be
+    taken back, so a failed pull spends its turn rather than leave one behind
+    every minute for as long as the other host is away.
 
     Getting here means Job.parse accepted an action that nothing knows how to
     run. The caller logs it and moves on to the next line, which is what an
@@ -439,11 +440,10 @@ def run_purge(job: Purge, name, test=False):
             pattern.deprecated,
             pattern.text,
         )
-    if purge(Arg(name=[name], pattern=[pattern.text], dryrun=False), test=test):
-        log.info("Finished purging")
-    else:
+    if not purge(Arg(name=[name], pattern=[pattern.text], dryrun=False), test=test):
         log.warning("Could not purge the snapshots of %s", name)
-    # a purge that failed waits for its next turn all the same, as it always has
+        return False
+    log.info("Finished purging")
     return True
 
 
@@ -461,8 +461,10 @@ def run_synchronize(job: Synchronize, name, test=False):
         log.debug("End of %s synchronization from %s", name, hosts)
     else:
         log.warning("Could not synchronize %s from %s", name, hosts)
-    # like the purge, a synchronization that could not pull the data back
-    # still considers its turn spent
+    # the turn is spent either way: the snapshot taken above holds the volume
+    # as it was before rsync, it is what a pull stopped halfway is recovered
+    # from, and coming back at the next round would take a new one every
+    # minute while the other host is away
     return True
 
 
@@ -499,6 +501,8 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None):
             schedule_log[action].setdefault(name, now - timedelta(1))
             if not is_due(entry, schedule_log[action][name], now):
                 continue
+            # the date a job answered for, so one that failed and can be
+            # tried again comes back at the next round
             if run_job(job, name, test=test):
                 schedule_log[action][name] = now
         except CalledProcessError as e:

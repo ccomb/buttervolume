@@ -4,6 +4,16 @@ CHANGELOG
 3.13 (unreleased)
 *****************
 
+- A scheduled purge that failed is now tried again at the next scheduler
+  round. Its date was written down whether it had worked or not, so a failure
+  meant waiting a whole period, usually a day, before anything tried again,
+  while a failed snapshot or replication came back a minute later. A purge
+  leaves nothing behind when it fails, so there is nothing to gain from
+  waiting. A synchronization is the one job that still spends its turn on a
+  failure, because it takes a snapshot of the volume before rsync overwrites
+  it, and retrying every minute would leave one snapshot per minute behind
+  while the other host is away.
+
 - Saving a scheduled job no longer risks losing the whole schedule.
   ``schedule.csv`` was emptied before being written back, and it is rewritten
   in full every time a job is added, paused, resumed or removed, so an
