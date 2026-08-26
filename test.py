@@ -28,7 +28,7 @@ from unittest.mock import MagicMock, patch
 from webtest import TestApp
 
 from buttervolume import ValidationError, btrfs, cli, plugin, schedule
-from buttervolume.cli import init_btrfs, runjobs
+from buttervolume.cli import init_btrfs, is_due, run_job, runjobs
 from buttervolume.names import (
     Snapshot,
     new_snapshot,
@@ -1373,6 +1373,48 @@ class TestScheduledJob(unittest.TestCase):
         ):
             with self.assertRaises(ValidationError):
                 Job.parse(action)
+
+
+class TestWhatIsDue(unittest.TestCase):
+    """When a line's turn has come, decided on paper
+
+    No volume, no daemon and no schedule file: the decision has never needed
+    more than a line, the date of its last run and a clock.
+    """
+
+    def hourly(self):
+        return Entry("volume", "snapshot", "60", "True")
+
+    def test_a_line_waits_for_its_timer(self):
+        now = datetime(2026, 8, 26, 12, 0)
+        self.assertFalse(is_due(self.hourly(), now - timedelta(minutes=59), now))
+
+    def test_a_line_whose_timer_has_elapsed_is_due(self):
+        now = datetime(2026, 8, 26, 12, 0)
+        self.assertTrue(is_due(self.hourly(), now - timedelta(minutes=60), now))
+
+    def test_a_line_the_scheduler_has_never_seen_is_due(self):
+        """A daemon that just started writes down a day of lateness for it"""
+        now = datetime(2026, 8, 26, 12, 0)
+        self.assertTrue(is_due(self.hourly(), now - timedelta(days=1), now))
+
+
+class TestRunningAJob(unittest.TestCase):
+    """Which function runs which kind of job"""
+
+    def test_a_job_nobody_knows_how_to_run_says_so(self):
+        """Job.parse builds the four kinds the command line knows how to run
+
+        A fifth one added there without its execution here used to fall into
+        the last branch and be synchronized. It now names itself and stops,
+        and the scheduler reports it like any other line that failed.
+        """
+
+        class Rewind(Job):
+            pass
+
+        with self.assertRaises(ValidationError):
+            run_job(Rewind("rewind"), "volume", test=True)
 
 
 class TestScheduleFile(unittest.TestCase):
