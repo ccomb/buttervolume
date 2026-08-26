@@ -15,25 +15,34 @@ an older version wrote it, and it must stay possible to list, to pause and to
 delete. So an ``Entry`` is the line as written, four strings, and reading the
 job out of it is a separate step nobody is forced to take.
 
-``read_schedule`` and ``write_schedule`` are the only place where the CSV
+``read_schedule`` and ``write_schedule`` are the only place where that CSV
 format is known. They are thin: turning a row into an ``Entry`` is pure, only
 the opening of the file is not. ``read_schedule`` says nothing about a file
 that is not there, because its callers answer that differently and it is their
 decision, not this module's. ``write_schedule`` replaces the file in one go,
-because it is the only state the plugin keeps outside BTRFS and a half-written
-schedule is a lost one.
+because a half-written schedule is a lost one.
+
+The scheduler keeps a second file here, and for the same reason: ``lastruns``
+holds the date each job last succeeded, one line per volume and action. It
+answers another question than the schedule, when a job ran rather than what it
+asks for, so it is another file, and the schedule stays the only one an
+administrator writes by hand.
 """
 
 import csv
+import logging
 import os
 import stat
 import tempfile
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime
 
 from buttervolume import ValidationError
 from buttervolume.names import validate_hostname
 from buttervolume.purge import Pattern
+
+log = logging.getLogger()
 
 FIELDS = ["Name", "Action", "Timer", "Active"]
 
@@ -148,38 +157,38 @@ def read_schedule(path):
     return [Entry.parse(row) for row in read_rows(path)]
 
 
-def write_schedule(path, entries):
-    """Replace the file in one go, or leave it exactly as it was.
+def write_rows(path, rows):
+    """Replace this file in one go, or leave it exactly as it was.
 
     Writing in place would empty the file before knowing what goes back in it,
-    and an interruption there loses the whole schedule. So the lines are
+    and an interruption there loses everything it held. So the lines are
     written next to it and the file is renamed over the old one, which is
     atomic within a filesystem, hence the temporary file in the same directory.
 
     A rename replaces a name, where the previous write followed it: the file
-    written is the one the path really designates, so a schedule reached
-    through a symbolic link keeps being the file it points at.
+    written is the one the path really designates, so a file reached through a
+    symbolic link keeps being the file it points at.
 
     A machine that stops between the temporary file and the rename leaves that
-    temporary file behind. Nothing here removes it: it is named after the
-    schedule so that whoever finds it knows what it is, and deleting files
-    nobody asked to delete is how a schedule gets lost.
+    temporary file behind. Nothing here removes it: it is named after the file
+    it was about to become, so that whoever finds it knows what it is, and
+    deleting files nobody asked to delete is how a schedule gets lost.
     """
     path = os.path.realpath(path)
-    # the name says whose leftover it is, on the day a machine stops between
-    # this line and the rename below and leaves one behind
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix="schedule.")
+    fd, tmp = tempfile.mkstemp(
+        dir=os.path.dirname(path) or ".", prefix=f"{os.path.basename(path)}."
+    )
     try:
         with os.fdopen(fd, "w", newline="") as f:
-            csv.writer(f).writerows(entry.row for entry in entries)
+            csv.writer(f).writerows(rows)
             f.flush()
             # without this, a crash can bring the rename to the disk before
             # the lines it renames, which is the empty file we are avoiding
             os.fsync(f.fileno())
         # renaming gives a new file where writing in place kept the old one,
         # so the mode and the hands of the one being replaced are put back. A
-        # temporary file is readable by nobody else, and a schedule that names
-        # volumes and hosts has no reason to be born more open than that
+        # temporary file is readable by nobody else, and a file naming volumes
+        # and hosts has no reason to be born more open than that
         with suppress(FileNotFoundError):
             previous = os.stat(path)
             os.chmod(tmp, stat.S_IMODE(previous.st_mode))
@@ -188,3 +197,49 @@ def write_schedule(path, entries):
     except BaseException:
         os.unlink(tmp)
         raise
+
+
+def write_schedule(path, entries):
+    """Replace the schedule file, because a half-written schedule is a lost one."""
+    write_rows(path, [entry.row for entry in entries])
+
+
+def read_last_runs(path):
+    """When each job last succeeded: the date, by action and by volume.
+
+    A line nobody can read is skipped with a warning, and the job it named is
+    then a job we have no date for, which the scheduler runs at once. That is
+    one run too many, never one too few, and the lines around it keep their
+    date, the way the scheduler already reads schedule.csv line by line.
+
+    Raises if the file is not there, like ``read_schedule``: the first start
+    of a daemon and a file somebody deleted are the caller's business.
+    """
+    last_runs = {}
+    for row in read_rows(path):
+        try:
+            name, action, date = row
+            last_runs.setdefault(action, {})[name] = datetime.fromisoformat(date)
+        except ValueError as e:
+            log.warning("Skipping the unreadable line %s of %s: %s", row, path, e)
+    return last_runs
+
+
+def write_last_runs(path, last_runs):
+    """Write down when each job last succeeded.
+
+    A job that leaves the schedule leaves its date here, and so does one whose
+    action is rewritten, since the action as the schedule spells it is what
+    names it. Such a line costs a line, and it is that date which comes back
+    the day the job comes back, so nothing here goes looking for lines to
+    remove: what nobody asked to delete stays.
+    """
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    write_rows(
+        path,
+        [
+            [name, action, date.isoformat()]
+            for action, names in last_runs.items()
+            for name, date in names.items()
+        ],
+    )

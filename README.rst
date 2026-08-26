@@ -291,6 +291,9 @@ You can configure the following variables:
     * ``SNAPSHOTS_PATH``: the path where the BTRFS snapshots are located
     * ``TEST_REMOTE_PATH``: the path during unit tests where the remote BTRFS snapshots are located
     * ``SCHEDULE``: the path of the scheduler configuration
+    * ``LAST_RUNS``: the path of the file where the scheduler writes down the date
+      of the last successful run of each scheduled job, so that a restart does not
+      run everything again
     * ``RUNPATH``: the path of the docker run directory (/run/docker)
     * ``SOCKET``: the path of the unix socket where buttervolume listens
     * ``TIMER``: the number of seconds between two runs of the scheduler jobs
@@ -319,6 +322,7 @@ If none of this is configured, the following default values are used:
     * ``SNAPSHOTS_PATH = /var/lib/buttervolume/snapshots/``
     * ``TEST_REMOTE_PATH = /var/lib/buttervolume/received/``
     * ``SCHEDULE = /etc/buttervolume/schedule.csv``
+    * ``LAST_RUNS = /var/lib/buttervolume/lastruns.csv``
     * ``RUNPATH = /run/docker``
     * ``SOCKET = $RUNPATH/plugins/btrfs.sock`` # only if run manually
     * ``TIMER = 60``
