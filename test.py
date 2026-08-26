@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import threading
@@ -1397,6 +1398,28 @@ class TestScheduleFile(unittest.TestCase):
         write_schedule(path, entries)
         with open(path, newline="") as f:
             self.assertEqual(f.read(), "www,snapshot,60,True\r\nwww,purge:2h,120,False\r\n")
+
+    def test_an_interrupted_write_leaves_the_previous_schedule_alone(self):
+        """This file is the only state outside BTRFS, and half of it is none of it"""
+        content = "www,snapshot,60,True\r\nwww,purge:2h,120,False\r\n"
+        path = self.schedule_file(content)
+
+        def entries():
+            yield Entry("www", "snapshot", "60", "True")
+            raise OSError("No space left on device")
+
+        with self.assertRaises(OSError):
+            write_schedule(path, entries())
+        with open(path, newline="") as f:
+            self.assertEqual(f.read(), content)
+        self.assertEqual(os.listdir(self.tmp), ["schedule.csv"])
+
+    def test_writing_the_schedule_keeps_the_mode_of_the_file_it_replaces(self):
+        """Saving a job is no reason for the file to change hands"""
+        path = self.schedule_file("www,snapshot,60,True\r\n")
+        os.chmod(path, 0o640)
+        write_schedule(path, read_schedule(path))
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o640)
 
     def test_the_api_says_a_line_the_way_it_always_did(self):
         """Clients read these four keys, and read Active as a word, not a boolean"""

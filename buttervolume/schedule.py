@@ -19,10 +19,15 @@ job out of it is a separate step nobody is forced to take.
 format is known. They are thin: turning a row into an ``Entry`` is pure, only
 the opening of the file is not. ``read_schedule`` says nothing about a file
 that is not there, because its callers answer that differently and it is their
-decision, not this module's.
+decision, not this module's. ``write_schedule`` replaces the file in one go,
+because it is the only state the plugin keeps outside BTRFS and a half-written
+schedule is a lost one.
 """
 
 import csv
+import os
+import stat
+import tempfile
 from dataclasses import dataclass
 
 from buttervolume import ValidationError
@@ -143,5 +148,26 @@ def read_schedule(path):
 
 
 def write_schedule(path, entries):
-    with open(path, "w", newline="") as f:
-        csv.writer(f).writerows(entry.row for entry in entries)
+    """Replace the file in one go, or leave it exactly as it was.
+
+    Writing in place would empty the file before knowing what goes back in it,
+    and an interruption there loses the whole schedule. So the lines are
+    written next to it and the file is renamed over the old one, which is
+    atomic within a filesystem, hence the temporary file in the same directory.
+    """
+    # the file that is being replaced says what mode it wants; a schedule
+    # written for the first time is readable, as opening it in place made it
+    mode = stat.S_IMODE(os.stat(path).st_mode) if os.path.exists(path) else 0o644
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".")
+    try:
+        with os.fdopen(fd, "w", newline="") as f:
+            csv.writer(f).writerows(entry.row for entry in entries)
+            f.flush()
+            # without this, a crash can bring the rename to the disk before
+            # the lines it renames, which is the empty file we are avoiding
+            os.fsync(f.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
