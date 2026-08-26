@@ -1,3 +1,11 @@
+"""The whole test suite, driven through ``webtest`` against the app.
+
+Most tests post to the plugin the way Docker does, then check what came back
+and what the snapshots directory holds, so they need a real BTRFS filesystem:
+``./test_local.sh`` sets one up. The ones that need no filesystem at all sit in
+their own classes at the bottom and read names and patterns directly.
+"""
+
 import json
 import logging
 import os
@@ -30,8 +38,8 @@ from buttervolume.plugin import (
     SNAPSHOTS_PATH,
     TEST_REMOTE_PATH,
     VOLUMES_PATH,
-    compute_purges,
 )
+from buttervolume.purge import Pattern, compute_purges
 
 # check that the target dir is btrfs
 SCHEDULE = plugin.SCHEDULE = tempfile.mkstemp()[1]
@@ -831,6 +839,29 @@ class TestCase(unittest.TestCase):
         )
         self.assertIn("Invalid pattern '2h:2h'. Use '2h' instead", jsonloads(resp.body)["Err"])
 
+        # check the order of the components is checked, shortest first
+        resp = self.app.post(
+            "/VolumeDriver.Snapshots.Purge",
+            json.dumps({"Name": name, "Pattern": "4h:2h"}),
+        )
+        self.assertEqual(
+            jsonloads(resp.body),
+            {
+                "Err": "Invalid purge pattern: 4h:2h - Time values must be in ascending order"
+                " (e.g., 2h:4h:8h or 30m:2h:1d)"
+            },
+        )
+
+        # check we have an error with an unknown unit
+        resp = self.app.post(
+            "/VolumeDriver.Snapshots.Purge",
+            json.dumps({"Name": name, "Pattern": "5x"}),
+        )
+        self.assertEqual(
+            jsonloads(resp.body),
+            {"Err": "Invalid purge pattern: 5x - unknown unit 'x'"},
+        )
+
         # check we have an error with a non numeric pattern
         resp = self.app.post(
             "/VolumeDriver.Snapshots.Purge",
@@ -902,9 +933,7 @@ class TestCase(unittest.TestCase):
             "foobar@" + (now - timedelta(hours=h, minutes=30)).strftime(DTFORMAT)
             for h in range(5000)
         ]
-        purge_list = compute_purges(  # 1d:1w:4w:1y
-            snapshots, [60 * 24, 60 * 24 * 7, 60 * 24 * 7 * 4, 60 * 24 * 365], now
-        )
+        purge_list = compute_purges(snapshots, Pattern.parse("1d:1w:4w:1y"), now, DTFORMAT)
         not_purged = set(snapshots) - set(purge_list)
         self.assertEqual(len(not_purged), 40)
 
@@ -912,9 +941,7 @@ class TestCase(unittest.TestCase):
         now = datetime.now()
         snapshots = ["foobar@" + (now - timedelta(hours=h)).strftime(DTFORMAT) for h in range(3000)]
         for now in [now + timedelta(hours=h) for h in range(3000)]:
-            purge_list = compute_purges(  # 1d:1w:4w:1y
-                snapshots, [60 * 24, 60 * 24 * 7, 60 * 24 * 7 * 4, 60 * 24 * 365], now
-            )
+            purge_list = compute_purges(snapshots, Pattern.parse("1d:1w:4w:1y"), now, DTFORMAT)
             snapshots = sorted(set(snapshots) - set(purge_list))
         self.assertEqual(len(snapshots), 4)
 
@@ -1157,6 +1184,27 @@ class TestNames(unittest.TestCase):
         self.assertEqual(str(already_sent[-1].without_host()), "www@t2")
         # and the trace this send will leave behind
         self.assertEqual(str(Snapshot.parse("www@t3").sent_to("node2")), "www@t3@node2")
+
+
+class TestPurgePattern(unittest.TestCase):
+    """The retention pattern, read without touching a filesystem"""
+
+    def test_a_pattern_is_read_as_the_durations_it_names(self):
+        self.assertEqual(Pattern.parse("2h").minutes, (120,))
+        self.assertEqual(Pattern.parse("30m:2h:1d:1w:1y").minutes, (30, 120, 1440, 10080, 525600))
+        self.assertEqual(str(Pattern.parse("4h:1d")), "4h:1d")
+        self.assertIsNone(Pattern.parse("4h:1d").deprecated)
+
+    def test_the_old_way_of_writing_a_single_duration_is_read_as_that_duration(self):
+        pattern = Pattern.parse("2h:2h")
+        self.assertEqual(pattern.minutes, (120,))
+        self.assertEqual(pattern.text, "2h")
+        self.assertEqual(pattern.deprecated, "2h:2h")
+
+    def test_a_pattern_nobody_could_apply_is_refused(self):
+        for text in ("", "2h:", "60m:plop:3000m", "5x", "²h", "4h:2h", "2h:120m", "2h:2h:4h"):
+            with self.assertRaises(ValidationError):
+                Pattern.parse(text)
 
 
 class TemporaryDirectory(tempfile.TemporaryDirectory):

@@ -1,3 +1,16 @@
+"""The Docker Volume Plugin HTTP API, and where a name becomes a path.
+
+Every endpoint is a module-level ``@route(...)`` below, and that list of
+decorators is the authoritative route list. ``@route`` is defined here too, and
+is not Bottle's: it decodes the request, logs it, and turns any failure into
+the ``Err`` field of a 200 answer, which is the only shape a client can read.
+
+This is also where the directories are configured, so this is where a name
+turns into a path on disk, and where it is validated as it does. What a name is
+worth is decided in ``names.py``, what a retention pattern says in ``purge.py``;
+both are pure and know nothing of these directories.
+"""
+
 import configparser
 import csv
 import json
@@ -32,6 +45,7 @@ from buttervolume.names import (
     validate_snapshot_name,
     validate_volume_name,
 )
+from buttervolume.purge import Pattern, compute_purges
 
 config = configparser.ConfigParser()
 config.read("/etc/buttervolume/config.ini")
@@ -619,19 +633,16 @@ def snapshots_purge(req):
     volume_name = validate_volume_name(req["Name"])
     dryrun = req.get("Dryrun", False)
 
-    # Validate pattern with strict rules (no backward compatibility for immediate purge)
-    warning = validate_purge_pattern(req["Pattern"], allow_backward_compat=False)
-    if warning:
-        raise ValidationError(f"Invalid pattern: {warning}")
-
-    # Parse pattern for compute_purges
-    pattern = parse_purge_pattern(req["Pattern"])
+    pattern = Pattern.parse(req["Pattern"])
+    # An immediate purge refuses the old duplicate spelling instead of guessing
+    if pattern.deprecated:
+        raise ValidationError(
+            f"Invalid pattern '{pattern.deprecated}'. "
+            f"Use '{pattern.text}' instead of duplicate components."
+        )
 
     snapshots = snapshots_of(volume_name, os.listdir(SNAPSHOTS_PATH))
-
-    # Compute which snapshots to purge
-    now = datetime.now()
-    purge_list = compute_purges(snapshots, pattern, now)
+    purge_list = compute_purges(snapshots, pattern, datetime.now(), DTFORMAT)
 
     for snapshot in purge_list:
         if dryrun:
@@ -642,145 +653,3 @@ def snapshots_purge(req):
             log.info(f"Deleted snapshot {snapshot}")
 
     return {"Err": ""}
-
-
-def validate_purge_pattern(pattern_str, allow_backward_compat=False):
-    """Validate purge patterns
-
-    Args:
-        pattern_str: Pattern string like "2h:1d" or "2h"
-        allow_backward_compat: If True, allow deprecated "2h:2h" patterns with warning
-
-    Returns:
-        warning_message_or_none: Warning message for deprecated patterns, None otherwise
-
-    Raises:
-        ValidationError: If pattern is invalid
-    """
-    units = {"m": 1, "h": 60, "d": 60 * 24, "w": 60 * 24 * 7, "y": 60 * 24 * 365}
-
-    try:
-        split = pattern_str.split(":")
-        assert len(split) >= 1, "Pattern must have at least 1 component"
-        assert all(p[:-1].isnumeric() for p in split), (
-            "Pattern components must be numeric with unit suffix"
-        )
-
-        # Check for deprecated duplicate patterns
-        if len(split) == 2 and split[0] == split[1]:
-            if allow_backward_compat:
-                return (
-                    f"Converting deprecated pattern '{pattern_str}' to '{split[0]}'. "
-                    f"Please update your schedule using 'buttervolume scheduled --auto-convert-old-patterns'."
-                )
-            else:
-                raise ValidationError(
-                    f"Invalid pattern '{pattern_str}'. Use '{split[0]}' instead of duplicate components."
-                )
-
-        # Check ascending order for multi-component patterns - by time values, not just units
-        if len(split) > 1:
-            time_values = [int(p[:-1]) * units[p[-1]] for p in split]
-            assert all(x < y for x, y in zip(time_values, time_values[1:])), (
-                "Time values must be in ascending order (e.g., 2h:4h:8h or 30m:2h:1d)"
-            )
-
-        return None  # Valid pattern, no warning
-
-    except (ValueError, KeyError, AssertionError) as e:
-        raise ValidationError(f"Invalid purge pattern: {pattern_str} - {str(e)}") from None
-
-
-def convert_purge_pattern(pattern_str):
-    """Convert deprecated purge patterns to new format
-
-    Args:
-        pattern_str: Pattern string like "2h:2h"
-
-    Returns:
-        converted_pattern_str: Converted pattern like "2h"
-    """
-    split = pattern_str.split(":")
-
-    # Convert "2h:2h" to "2h"
-    if len(split) == 2 and split[0] == split[1]:
-        return split[0]
-
-    # Pattern doesn't need conversion
-    return pattern_str
-
-
-def parse_purge_pattern(pattern_str):
-    """Parse purge pattern string into minutes list for compute_purges
-
-    Args:
-        pattern_str: Pattern string like "2h:1d" or "2h"
-
-    Returns:
-        list: Pattern converted to minutes, sorted in descending order
-
-    Raises:
-        ValidationError: If pattern is invalid
-    """
-    units = {"m": 1, "h": 60, "d": 60 * 24, "w": 60 * 24 * 7, "y": 60 * 24 * 365}
-
-    try:
-        split = pattern_str.split(":")
-        pattern = sorted(int(i[:-1]) * units[i[-1]] for i in split)
-        return pattern
-    except (ValueError, KeyError) as e:
-        raise ValidationError(f"Invalid purge pattern: {pattern_str} - {str(e)}") from None
-
-
-def compute_purges(snapshots, pattern, now):
-    """Return the list of snapshots to purge,
-    given a list of snapshots, a purge pattern and a now time
-    """
-    snapshots = sorted(snapshots)
-    pattern = sorted(pattern, reverse=True)
-    purge_list = []
-    max_age = pattern[0]
-    # Age of the snapshots in minutes.
-    # Example : [30, 70, 90, 150, 210, ..., 4000]
-    snapshots_age = []
-    valid_snapshots = []
-    for s in snapshots:
-        try:
-            age = now - Snapshot.parse(s).taken_at(DTFORMAT)
-        except (ValidationError, ValueError):
-            # a purge does not delete what it cannot date
-            log.info("Skipping purge of %s with invalid date format", s)
-            continue
-        snapshots_age.append(int(age.total_seconds()) / 60)
-        valid_snapshots.append(s)
-    if not valid_snapshots:
-        return purge_list
-
-    # Handle single pattern case (e.g., "2h" -> [120])
-    if len(pattern) == 1:
-        # For single pattern, delete everything older than the threshold
-        threshold = pattern[0]
-        for i, age in enumerate(snapshots_age):
-            if age > threshold:
-                purge_list.append(valid_snapshots[i])
-        return purge_list
-
-    # Handle multi-pattern case (e.g., "2h:1d:1w" -> [120, 1440, 10080])
-    # pattern = 3600:180:60
-    # age segments = [(3600, 180), (180, 60)]
-    for age_segment in [(pattern[i], pattern[i + 1]) for i, _ in enumerate(pattern[:-1])]:
-        last_timeframe = -1
-        for i, age in enumerate(snapshots_age):
-            # if the age is outside the age_segment, delete nothing.
-            # Only 70 and 90 are inside the age_segment (60, 180)
-            if age > age_segment[0] < max_age or age < age_segment[1]:
-                continue
-            # Now get the timeframe number of the snapshot.
-            # Ages 70 and 90 are in the same timeframe (70//60 == 90//60)
-            timeframe = age // age_segment[1]
-            # delete if we already had a snapshot in the same timeframe
-            # or if the snapshot is very old
-            if timeframe == last_timeframe or age > max_age:
-                purge_list.append(valid_snapshots[i])
-            last_timeframe = timeframe
-    return purge_list
