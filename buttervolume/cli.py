@@ -9,8 +9,12 @@ daemon exists, and ``scheduled --auto-convert-old-patterns`` rewrites
 
 The scheduler runs what is due in ``schedule.csv``: a snapshot, a replication,
 a synchronization or a purge. Reading that file, and reading what each of its
-lines asks for, is ``schedule.py``'s business, so the loop below only has to
-run it. That file is the only state the plugin keeps outside BTRFS.
+lines asks for, is ``schedule.py``'s business. What is left here is done in two
+steps that do not mix: ``is_due`` decides, from a line, a date and a clock,
+without touching anything; ``run_job`` does the work, one function per kind of
+job. ``schedule.csv`` is the only state the plugin keeps outside BTRFS; when
+a job last ran, and which replications are under way, live in memory alone and
+are forgotten when the daemon stops.
 """
 
 import argparse
@@ -27,6 +31,7 @@ import urllib.parse
 from contextlib import suppress
 from dataclasses import replace
 from datetime import datetime, timedelta
+from functools import singledispatch
 from os.path import exists
 from subprocess import CalledProcessError
 
@@ -40,7 +45,6 @@ from buttervolume import ReplicationError, ValidationError
 from buttervolume.plugin import (
     LOGLEVEL,
     SCHEDULE,
-    SCHEDULE_DISABLED,
     SNAPSHOTS_PATH,
     SOCKET,
     TIMER,
@@ -54,6 +58,7 @@ from buttervolume.schedule import (
     Purge,
     Replicate,
     Snapshot,
+    Synchronize,
     read_rows,
     read_schedule,
     write_schedule,
@@ -343,11 +348,127 @@ class Arg:
             setattr(self, k, v)
 
 
-def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
+def is_due(entry, last, now):
+    """Has this line waited its timer since the last time it ran?
+
+    Pure: a line, a date and a clock, nothing else. The clock is given rather
+    than read here, so deciding what is due can be tested without a volume, a
+    daemon or a filesystem.
+    """
+    return now >= last + timedelta(minutes=int(entry.timer))
+
+
+@singledispatch
+def run_job(job, name, test=False):
+    """Run one scheduled job on one volume, and say whether its turn is spent.
+
+    True means the job must not be tried again before its timer has elapsed
+    once more; False means the next scheduler round tries it again. The four
+    jobs below do not answer the same thing after a failure, and never have: a
+    snapshot or a replication that failed comes back at the next round, a purge
+    that failed waits for its next turn. Nobody decided that, and it is now
+    said in four visible places instead of being buried in one long branch.
+
+    Getting here means Job.parse accepted an action that nothing knows how to
+    run. The caller logs it and moves on to the next line, which is what an
+    action we cannot run deserves.
+    """
+    raise ValidationError(f"Nothing runs a {type(job).__name__} job")
+
+
+@run_job.register
+def run_snapshot(job: Snapshot, name, test=False):
+    log.info("Starting scheduled snapshot of %s", name)
+    snap = snapshot(Arg(name=[name]), test=test)
+    if not snap:
+        log.info("Could not snapshot %s", name)
+        return False
+    log.info("Successfully snapshotted to %s", snap)
+    return True
+
+
+@run_job.register
+def run_replicate(job: Replicate, name, test=False):
+    if name in ReplicationInProgress:
+        log.warning(f"Replication of {name} already in progress, skipping.")
+        return False
+    log.info("Starting scheduled replication of %s", name)
+    snap = None
+    try:
+        ReplicationInProgress.add(name)
+        snap = snapshot(Arg(name=[name]), test=test)
+        if not snap:
+            log.info("Could not snapshot %s", name)
+            return False
+        log.info("Successfully snapshotted to %s", snap)
+        if not send(Arg(snapshot=[snap], host=[job.host]), test=test):
+            # the same road as an exception: the error is already logged,
+            # and the snapshot taken for this replication has no reason to stay
+            raise ReplicationError(f"Could not send {snap} to {job.host}")
+        log.info("Successfully replicated %s to %s", name, snap)
+        return True
+    except Exception as e:
+        log.warning("Replication failed: %s", e)
+        # remove snapshot that was created for the failed replication
+        if snap:
+            if remove(Arg(name=[snap]), test=test):
+                log.info("Removed snapshot %s for failed replication", snap)
+            else:
+                log.warning(
+                    "Could not remove snapshot %s of the failed replication",
+                    snap,
+                )
+        return False
+    finally:
+        ReplicationInProgress.remove(name)
+
+
+@run_job.register
+def run_purge(job: Purge, name, test=False):
+    pattern = job.pattern
+    log.info(
+        "Starting scheduled purge of %s with pattern %s",
+        name,
+        pattern.deprecated or pattern.text,
+    )
+    # A deprecated pattern is converted and reported, not refused
+    if pattern.deprecated:
+        log.warning(
+            "Converting deprecated pattern '%s' to '%s'. Please update your "
+            "schedule using 'buttervolume scheduled --auto-convert-old-patterns'.",
+            pattern.deprecated,
+            pattern.text,
+        )
+    if purge(Arg(name=[name], pattern=[pattern.text], dryrun=False), test=test):
+        log.info("Finished purging")
+    else:
+        log.warning("Could not purge the snapshots of %s", name)
+    # a purge that failed waits for its next turn all the same, as it always has
+    return True
+
+
+@run_job.register
+def run_synchronize(job: Synchronize, name, test=False):
+    log.info("Starting scheduled synchronization of %s", name)
+    hosts = list(job.hosts)
+    # do a snapshot to save state before pulling data
+    snap = snapshot(Arg(name=[name]), test=test)
+    if not snap:
+        log.info("Could not snapshot %s", name)
+        return False
+    log.debug("Successfully snapshotted to %s", snap)
+    if sync(Arg(volumes=[name], hosts=hosts), test=test):
+        log.debug("End of %s synchronization from %s", name, hosts)
+    else:
+        log.warning("Could not synchronize %s from %s", name, hosts)
+    # like the purge, a synchronization that could not pull the data back
+    # still considers its turn spent
+    return True
+
+
+def runjobs(config=SCHEDULE, test=False, schedule_log=None):
     if schedule_log is None:
         schedule_log = {"snapshot": {}, "replicate": {}, "synchronize": {}}
-    if exists(SCHEDULE_DISABLED):
-        log.info("Schedule is globally paused")
     log.info("New scheduler job at %s", datetime.now())
     # open the config and launch the tasks
     if not exists(config):
@@ -376,85 +497,9 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
             # just starting, we consider beeing late on snapshots
             schedule_log.setdefault(action, {})
             schedule_log[action].setdefault(name, now - timedelta(1))
-            last = schedule_log[action][name]
-            if now < last + timedelta(minutes=int(timer)):
+            if not is_due(entry, schedule_log[action][name], now):
                 continue
-            # choose and run the right action
-            if isinstance(job, Snapshot):
-                log.info("Starting scheduled snapshot of %s", name)
-                snap = snapshot(Arg(name=[name]), test=test)
-                if not snap:
-                    log.info("Could not snapshot %s", name)
-                    continue
-                log.info("Successfully snapshotted to %s", snap)
-                schedule_log[action][name] = now
-            elif isinstance(job, Replicate):
-                if name in ReplicationInProgress:
-                    log.warning(f"Replication of {name} already in progress, skipping.")
-                    continue
-                log.info("Starting scheduled replication of %s", name)
-                snap = None
-                try:
-                    ReplicationInProgress.add(name)
-                    snap = snapshot(Arg(name=[name]), test=test)
-                    if not snap:
-                        log.info("Could not snapshot %s", name)
-                        continue
-                    log.info("Successfully snapshotted to %s", snap)
-                    if not send(Arg(snapshot=[snap], host=[job.host]), test=test):
-                        # the same road as an exception: the error is
-                        # already logged, and the snapshot taken for this
-                        # replication has no reason to stay
-                        raise ReplicationError(f"Could not send {snap} to {job.host}")
-                    log.info("Successfully replicated %s to %s", name, snap)
-                    schedule_log[action][name] = now
-                except Exception as e:
-                    log.warning("Replication failed: %s", e)
-                    # remove snapshot that was created for the failed replication
-                    if snap:
-                        if remove(Arg(name=[snap]), test=test):
-                            log.info("Removed snapshot %s for failed replication", snap)
-                        else:
-                            log.warning(
-                                "Could not remove snapshot %s of the failed replication",
-                                snap,
-                            )
-                finally:
-                    ReplicationInProgress.remove(name)
-            elif isinstance(job, Purge):
-                parsed = job.pattern
-                log.info(
-                    "Starting scheduled purge of %s with pattern %s",
-                    name,
-                    parsed.deprecated or parsed.text,
-                )
-                # A deprecated pattern is converted and reported, not refused
-                if parsed.deprecated:
-                    log.warning(
-                        "Converting deprecated pattern '%s' to '%s'. Please update your "
-                        "schedule using 'buttervolume scheduled --auto-convert-old-patterns'.",
-                        parsed.deprecated,
-                        parsed.text,
-                    )
-
-                if purge(Arg(name=[name], pattern=[parsed.text], dryrun=False), test=test):
-                    log.info("Finished purging")
-                else:
-                    log.warning("Could not purge the snapshots of %s", name)
-                schedule_log[action][name] = now
-            else:  # a Synchronize, the only job left
-                log.info("Starting scheduled synchronization of %s", name)
-                hosts = list(job.hosts)
-                # do a snapshot to save state before pulling data
-                snap = snapshot(Arg(name=[name]), test=test)
-                if not snap:
-                    log.info("Could not snapshot %s", name)
-                    continue
-                log.debug("Successfully snapshotted to %s", snap)
-                if sync(Arg(volumes=[name], hosts=hosts), test=test):
-                    log.debug("End of %s synchronization from %s", name, hosts)
-                else:
-                    log.warning("Could not synchronize %s from %s", name, hosts)
+            if run_job(job, name, test=test):
                 schedule_log[action][name] = now
         except CalledProcessError as e:
             log.error(
@@ -490,7 +535,7 @@ def scheduler(event, config=SCHEDULE, test=False, timer=TIMER):
             return
         else:
             try:
-                runjobs(config, test, schedule_log=schedule_log, timer=timer)
+                runjobs(config, test, schedule_log=schedule_log)
             except Exception:
                 log.critical("An exception occured in the scheduling job")
                 log.critical(traceback.format_exc())
