@@ -572,10 +572,11 @@ without deleting them::
 ``<volume>`` is the name of the volume, not the full path. It is expected
 to live in ``/var/lib/buttervolume/volumes``.
 
-``<pattern>`` is the snapshot retention pattern. It is a semicolon-separated
+``<pattern>`` is the snapshot retention pattern. It is a colon-separated
 list of time length specifiers with a unit. Units can be ``m`` for minutes,
-``h`` for hours, ``d`` for days, ``w`` for weeks, ``y`` for years. The pattern
-should have at least 2 items.
+``h`` for hours, ``d`` for days, ``w`` for weeks, ``y`` for years. The
+specifiers must be given from the shortest to the longest, and a pattern of a
+single specifier is allowed.
 
 Here are a few examples of retention patterns:
 
@@ -589,8 +590,11 @@ Here are a few examples of retention patterns:
     keep all snapshots during the last four hours, then one snapshot every
     four hours during the first week, then delete older snapshots.
 
-- ``2h:2h``
+- ``2h``
     keep all snapshots during the last two hours, then delete older snapshots.
+    Older versions of Buttervolume wrote this pattern ``2h:2h``, which is now
+    refused, and which ``buttervolume scheduled --auto-convert-old-patterns``
+    rewrites in the schedule.
 
 
 Schedule a job
