@@ -44,7 +44,6 @@ from buttervolume import ReplicationError, ValidationError
 from buttervolume.plugin import (
     LOGLEVEL,
     SCHEDULE,
-    SCHEDULE_DISABLED,
     SNAPSHOTS_PATH,
     SOCKET,
     TIMER,
@@ -469,8 +468,6 @@ def run_synchronize(job: Synchronize, name, test=False):
 def runjobs(config=SCHEDULE, test=False, schedule_log=None):
     if schedule_log is None:
         schedule_log = {"snapshot": {}, "replicate": {}, "synchronize": {}}
-    if exists(SCHEDULE_DISABLED):
-        log.info("Schedule is globally paused")
     log.info("New scheduler job at %s", datetime.now())
     # open the config and launch the tasks
     if not exists(config):
