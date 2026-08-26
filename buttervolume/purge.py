@@ -40,7 +40,9 @@ class Pattern:
     @classmethod
     def parse(cls, text):
         components = text.split(":")
-        if not all(c[:-1].isnumeric() for c in components):
+        # isdecimal, not isnumeric: "²".isnumeric() is True and int("²") raises,
+        # and a pattern nobody can apply must not leave here as a ValueError
+        if not all(c[:-1].isdecimal() for c in components):
             raise ValidationError(
                 f"Invalid purge pattern: {text} - "
                 "Pattern components must be numeric with unit suffix"

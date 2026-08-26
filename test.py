@@ -1194,7 +1194,7 @@ class TestPurgePattern(unittest.TestCase):
         self.assertEqual(pattern.deprecated, "2h:2h")
 
     def test_a_pattern_nobody_could_apply_is_refused(self):
-        for text in ("", "2h:", "60m:plop:3000m", "5x", "4h:2h", "2h:120m", "2h:2h:4h"):
+        for text in ("", "2h:", "60m:plop:3000m", "5x", "²h", "4h:2h", "2h:120m", "2h:2h:4h"):
             with self.assertRaises(ValidationError):
                 Pattern.parse(text)
 
