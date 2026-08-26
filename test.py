@@ -27,8 +27,8 @@ from unittest.mock import MagicMock, patch
 
 from webtest import TestApp
 
-from buttervolume import ValidationError, btrfs, cli, plugin, schedule
-from buttervolume.cli import init_btrfs, is_due, run_job, runjobs
+from buttervolume import ValidationError, btrfs, cli, plugin, schedule, scheduler
+from buttervolume.cli import init_btrfs
 from buttervolume.names import (
     Snapshot,
     new_snapshot,
@@ -51,6 +51,7 @@ from buttervolume.schedule import (
     write_last_runs,
     write_schedule,
 )
+from buttervolume.scheduler import is_due, run_job, runjobs
 
 # check that the target dir is btrfs
 SCHEDULE = plugin.SCHEDULE = tempfile.mkstemp()[1]
@@ -200,7 +201,7 @@ class TestCase(unittest.TestCase):
             # wait for the replication to start
             time.sleep(1)
             # check that the replication is in progress
-            self.assertIn(name, cli.ReplicationInProgress)
+            self.assertIn(name, scheduler.ReplicationInProgress)
             # run the scheduler again
             runjobs(SCHEDULE, True, last_runs=LAST_RUNS)
             # check that the second replication was skipped
@@ -208,7 +209,7 @@ class TestCase(unittest.TestCase):
             # wait for the replication to finish
             t.join()
             # check that the lock is released
-            self.assertNotIn(name, cli.ReplicationInProgress)
+            self.assertNotIn(name, scheduler.ReplicationInProgress)
         # unschedule
         self.app.post(
             "/VolumeDriver.Schedule",
@@ -280,7 +281,7 @@ class TestCase(unittest.TestCase):
         snapshots = [s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")]
         self.assertEqual(snapshots, [])
         # the lock was released
-        self.assertNotIn(name, cli.ReplicationInProgress)
+        self.assertNotIn(name, scheduler.ReplicationInProgress)
         # unschedule
         self.app.post(
             "/VolumeDriver.Schedule",
