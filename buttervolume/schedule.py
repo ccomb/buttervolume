@@ -18,8 +18,8 @@ job out of it is a separate step nobody is forced to take.
 ``read_schedule`` and ``write_schedule`` are the only place where the CSV
 format is known. They are thin: turning a row into an ``Entry`` is pure, only
 the opening of the file is not. ``read_schedule`` says nothing about a file
-that is not there, because its three callers answer that differently and it is
-their decision, not this module's.
+that is not there, because its callers answer that differently and it is their
+decision, not this module's.
 """
 
 import csv
@@ -102,12 +102,19 @@ class Entry:
 
     @classmethod
     def parse(cls, row):
-        if len(row) != len(FIELDS):
+        """The columns of a line, the missing ones read as empty.
+
+        Buttervolume 3.10 and older wrote three columns, without the ``Active``
+        one, and such a file is still out there: its lines are read as running,
+        which is what they were. A line with more columns than we know is
+        another matter, because writing the file back would lose them.
+        """
+        if len(row) > len(FIELDS):
             raise ValidationError(
-                f"Invalid schedule line {row}. It must have {len(FIELDS)} columns: "
-                f"{', '.join(FIELDS)}"
+                f"Invalid schedule line {row}. It must have at most {len(FIELDS)} "
+                f"columns: {', '.join(FIELDS)}"
             )
-        return cls(*row)
+        return cls(*row, *[""] * (len(FIELDS) - len(row)))
 
     @property
     def row(self):
@@ -119,10 +126,20 @@ class Entry:
         return dict(zip(FIELDS, self.row))
 
 
+def read_rows(path):
+    """The columns of each line, blank lines left out, nothing read of them.
+
+    The scheduler wants them this way: it decides line by line what to do with
+    one it cannot read, and a whole file that refuses to be read would stop
+    every job in it, not just the line at fault.
+    """
+    with open(path) as f:
+        return [row for row in csv.reader(f) if row]
+
+
 def read_schedule(path):
     """The lines of the schedule file. Raises if the file is not there."""
-    with open(path) as f:
-        return [Entry.parse(row) for row in csv.reader(f)]
+    return [Entry.parse(row) for row in read_rows(path)]
 
 
 def write_schedule(path, entries):

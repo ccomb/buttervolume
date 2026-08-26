@@ -41,7 +41,7 @@ from buttervolume.plugin import (
     VOLUMES_PATH,
 )
 from buttervolume.purge import Pattern, compute_purges
-from buttervolume.schedule import Entry, Job, read_schedule, write_schedule
+from buttervolume.schedule import Entry, Job, read_rows, read_schedule, write_schedule
 
 # check that the target dir is btrfs
 SCHEDULE = plugin.SCHEDULE = tempfile.mkstemp()[1]
@@ -1047,6 +1047,31 @@ class TestCase(unittest.TestCase):
         )
         self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps)
 
+    def test_the_scheduler_runs_the_lines_around_one_it_cannot_read(self):
+        """A file from Buttervolume 3.10 has three columns, and a hand-edited one anything
+
+        Neither is a reason to stop snapshotting every other volume in the
+        file, which is what reading the whole file in one go would do.
+        """
+        legacy = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        mangled = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        healthy = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        for name in (legacy, mangled, healthy):
+            self.create_a_volume_with_a_file(name)
+        with open(SCHEDULE, "w") as f:
+            f.write(f"{legacy},snapshot,60\n")
+            f.write(f"{mangled},snapshot,60,True,extra\n")
+            f.write(f"{healthy},snapshot,60,True\n")
+
+        with self.assertLogs(level=logging.WARNING) as log_capture:
+            runjobs(config=SCHEDULE, test=True)
+
+        self.assertTrue(any("Invalid schedule line" in msg for msg in log_capture.output))
+        snapshots = os.listdir(SNAPSHOTS_PATH)
+        self.assertTrue(any(s.startswith(legacy) for s in snapshots))
+        self.assertTrue(any(s.startswith(healthy) for s in snapshots))
+        self.assertFalse(any(s.startswith(mangled) for s in snapshots))
+
     def test_a_schedule_nobody_could_run_is_refused(self):
         """The endpoint is where a schedule is written, so it is where it is judged"""
         name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
@@ -1389,10 +1414,29 @@ class TestScheduleFile(unittest.TestCase):
         with self.assertRaises(ValidationError):
             Job.parse(entry.action)
 
-    def test_a_line_that_has_not_four_columns_is_refused(self):
-        for content in ("www,snapshot,60\r\n", "www,snapshot,60,True,extra\r\n"):
-            with self.assertRaises(ValidationError):
-                read_schedule(self.schedule_file(content))
+    def test_a_file_written_before_the_active_column_existed_is_still_read(self):
+        """Buttervolume 3.10 wrote three columns, and nothing ever rewrote those files"""
+        path = self.schedule_file("www,snapshot,60\r\n")
+        self.assertEqual(read_schedule(path), [Entry("www", "snapshot", "60", "")])
+        self.assertTrue(read_schedule(path)[0].enabled)
+
+    def test_a_blank_line_is_not_a_line(self):
+        path = self.schedule_file("www,snapshot,60,True\r\n\r\n")
+        self.assertEqual(len(read_schedule(path)), 1)
+
+    def test_a_line_with_more_columns_than_we_know_is_refused(self):
+        """Writing the file back would lose them, so we do not pretend to read it"""
+        with self.assertRaises(ValidationError):
+            read_schedule(self.schedule_file("www,snapshot,60,True,extra\r\n"))
+
+    def test_a_line_nobody_can_read_stops_only_itself(self):
+        """The scheduler reads line by line: one bad line must not stop the others"""
+        path = self.schedule_file("www,snapshot,60,True,extra\r\nwww,snapshot,60,True\r\n")
+        rows = read_rows(path)
+        self.assertEqual(len(rows), 2)
+        with self.assertRaises(ValidationError):
+            Entry.parse(rows[0])
+        self.assertEqual(Entry.parse(rows[1]), Entry("www", "snapshot", "60", "True"))
 
     def test_a_schedule_file_that_is_not_there_says_so(self):
         """Each caller answers that differently, so it is not decided here"""

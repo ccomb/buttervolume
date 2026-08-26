@@ -49,10 +49,12 @@ from buttervolume.plugin import (
 )
 from buttervolume.purge import Pattern
 from buttervolume.schedule import (
+    Entry,
     Job,
     Purge,
     Replicate,
     Snapshot,
+    read_rows,
     read_schedule,
     write_schedule,
 )
@@ -356,8 +358,11 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
         return
     name = action = timer = ""
     # run each action in the schedule if time is elapsed since the last one
-    for entry in read_schedule(config):
+    for row in read_rows(config):
         try:
+            # read here rather than in one go above: a line nobody can read
+            # must not stop the lines that follow it
+            entry = Entry.parse(row)
             name, action, timer = entry.name, entry.action, entry.timer
             if not entry.enabled:
                 log.info(f"{action} of {name} is disabled")
