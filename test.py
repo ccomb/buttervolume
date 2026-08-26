@@ -1001,6 +1001,30 @@ class TestCase(unittest.TestCase):
             json.dumps({"Name": name, "Action": "purge:2h:2h", "Timer": 0}),
         )
 
+    def test_an_unknown_scheduled_action_is_reported(self):
+        """A misspelled action in the schedule must be said out loud
+
+        It can only come from a hand-edited file, and until now the scheduler
+        skipped it silently at every run, so a volume nobody replicated looked
+        exactly like a volume replicated every hour.
+        """
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        with open(SCHEDULE, "w") as f:
+            f.write(f"{name},replicat:localhost,60,True\n")
+        nb_snaps = len(os.listdir(SNAPSHOTS_PATH))
+
+        with self.assertLogs(level=logging.WARNING) as log_capture:
+            runjobs(config=SCHEDULE, test=True)
+
+        self.assertTrue(
+            any(
+                f"Skipping the unknown action replicat:localhost of {name}" in msg
+                for msg in log_capture.output
+            )
+        )
+        self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps)
+
     @unittest.skipIf(
         os.environ.get("BUTTERVOLUME_LOCAL_TEST"), "SSH not available in local test mode"
     )
