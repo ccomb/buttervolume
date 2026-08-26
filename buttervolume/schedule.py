@@ -28,6 +28,7 @@ import csv
 import os
 import stat
 import tempfile
+from contextlib import suppress
 from dataclasses import dataclass
 
 from buttervolume import ValidationError
@@ -154,10 +155,12 @@ def write_schedule(path, entries):
     and an interruption there loses the whole schedule. So the lines are
     written next to it and the file is renamed over the old one, which is
     atomic within a filesystem, hence the temporary file in the same directory.
+
+    A rename replaces a name, where the previous write followed it: the file
+    written is the one the path really designates, so a schedule reached
+    through a symbolic link keeps being the file it points at.
     """
-    # the file that is being replaced says what mode it wants; a schedule
-    # written for the first time is readable, as opening it in place made it
-    mode = stat.S_IMODE(os.stat(path).st_mode) if os.path.exists(path) else 0o644
+    path = os.path.realpath(path)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".")
     try:
         with os.fdopen(fd, "w", newline="") as f:
@@ -166,7 +169,11 @@ def write_schedule(path, entries):
             # without this, a crash can bring the rename to the disk before
             # the lines it renames, which is the empty file we are avoiding
             os.fsync(f.fileno())
-        os.chmod(tmp, mode)
+        # the file being replaced keeps the mode it had; a temporary file is
+        # readable by nobody else, and a schedule that names volumes and hosts
+        # has no reason to be born more open than that
+        with suppress(FileNotFoundError):
+            os.chmod(tmp, stat.S_IMODE(os.stat(path).st_mode))
         os.replace(tmp, path)
     except BaseException:
         os.unlink(tmp)

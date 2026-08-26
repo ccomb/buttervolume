@@ -1421,6 +1421,24 @@ class TestScheduleFile(unittest.TestCase):
         write_schedule(path, read_schedule(path))
         self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o640)
 
+    def test_a_schedule_reached_through_a_symbolic_link_stays_that_file(self):
+        """A rename replaces a name, so the link is followed before renaming"""
+        target = os.path.join(self.tmp, "elsewhere.csv")
+        with open(target, "w") as f:
+            f.write("www,snapshot,60,True\r\n")
+        link = os.path.join(self.tmp, "schedule.csv")
+        os.symlink(target, link)
+        write_schedule(link, [Entry("www", "snapshot", "120", "True")])
+        self.assertTrue(os.path.islink(link))
+        with open(target, newline="") as f:
+            self.assertEqual(f.read(), "www,snapshot,120,True\r\n")
+
+    def test_a_schedule_written_where_there_was_none_is_read_by_nobody_else(self):
+        """It names volumes and hosts, so it is born no more open than that"""
+        path = os.path.join(self.tmp, "new.csv")
+        write_schedule(path, [Entry("www", "snapshot", "60", "True")])
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+
     def test_the_api_says_a_line_the_way_it_always_did(self):
         """Clients read these four keys, and read Active as a word, not a boolean"""
         path = self.schedule_file("www,snapshot,60,False\r\n")
