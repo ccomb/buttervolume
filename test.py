@@ -171,9 +171,14 @@ class TestCase(unittest.TestCase):
             "/VolumeDriver.Schedule",
             json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 1}),
         )
+
         # simulate a long-running replication
+        def slow_send(*args, **kwargs):
+            time.sleep(2)
+            return True
+
         with patch("buttervolume.cli.send") as mock_send:
-            mock_send.side_effect = lambda *args, **kwargs: time.sleep(2)
+            mock_send.side_effect = slow_send
             # run the scheduler in a separate thread
             t = threading.Thread(target=runjobs, args=(SCHEDULE, True))
             t.start()
@@ -266,6 +271,26 @@ class TestCase(unittest.TestCase):
             "/VolumeDriver.Schedule",
             json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 0}),
         )
+
+    def test_a_replication_that_failed_is_not_reported_as_a_success(self):
+        """A send answering an error is a failed replication, not a done one"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        self.app.post(
+            "/VolumeDriver.Schedule",
+            json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 1}),
+        )
+        with patch("buttervolume.cli.send") as mock_send:
+            # what the client answers when the endpoint fills the Err field
+            mock_send.return_value = False
+            with self.assertLogs(level=logging.INFO) as log_capture:
+                runjobs(SCHEDULE, True)
+
+        self.assertFalse(any("Successfully replicated" in msg for msg in log_capture.output))
+        self.assertTrue(any("Replication failed" in msg for msg in log_capture.output))
+        # the snapshot taken for that replication was removed, like any other
+        # failed replication
+        self.assertEqual([s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")], [])
 
     def test_send_error_reports_send_stderr(self):
         """A failed send/receive reports the error of the send side too"""

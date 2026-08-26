@@ -9,6 +9,14 @@ CHANGELOG
   do this could never fire, so a misspelled ``replicat:host`` looked exactly
   like a replication that ran on time.
 
+- A scheduled replication whose send failed is no longer reported as a
+  success. The send answered with an error, the client logged it and returned
+  a value nobody read, and the scheduler logged "Successfully replicated"
+  right after, kept the snapshot it had taken for the occasion, and considered
+  the job done until the next period. It now takes the same road as a
+  replication that raised: the failure is reported and the snapshot removed.
+  A purge and a synchronization that failed are reported as well.
+
 - A scheduled replication or synchronization naming a host that Buttervolume
   refuses, such as an SSH alias with an underscore, now stops and says so at
   every run. Such a line could be written by an older version, and it never

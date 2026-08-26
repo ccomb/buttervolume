@@ -35,7 +35,7 @@ from requests.exceptions import ConnectionError
 from waitress import serve
 from webtest import TestApp
 
-from buttervolume import ValidationError
+from buttervolume import ReplicationError, ValidationError
 from buttervolume.plugin import (
     FIELDS,
     LOGLEVEL,
@@ -301,10 +301,9 @@ def send(args, test=False):
             f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}",
             json.dumps(param),
         )
-    res = get_from(resp, "")
-    if res:
-        print(res)
-    return res
+    # the endpoint answers with an empty payload, so the only thing to report
+    # is whether the job happened: get_from already logged the error.
+    return get_from(resp, "") is not False
 
 
 def sync(args, test=False):
@@ -318,10 +317,9 @@ def sync(args, test=False):
             f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}",
             json.dumps(param),
         )
-    res = get_from(resp, "")
-    if res:
-        print(res)
-    return res
+    # the endpoint answers with an empty payload, so the only thing to report
+    # is whether the job happened: get_from already logged the error.
+    return get_from(resp, "") is not False
 
 
 def remove(args, test=False):
@@ -347,10 +345,9 @@ def purge(args, test=False):
             f"http+unix://{urllib.parse.quote_plus(USOCKET)}{urlpath}",
             json.dumps(param),
         )
-    res = get_from(resp, "")
-    if res:
-        print(res)
-    return res
+    # the endpoint answers with an empty payload, so the only thing to report
+    # is whether the job happened: get_from already logged the error.
+    return get_from(resp, "") is not False
 
 
 class Arg:
@@ -416,7 +413,11 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                             log.info("Could not snapshot %s", name)
                             continue
                         log.info("Successfully snapshotted to %s", snap)
-                        send(Arg(snapshot=[snap], host=[job.host]), test=test)
+                        if not send(Arg(snapshot=[snap], host=[job.host]), test=test):
+                            # the same road as an exception: the error is
+                            # already logged, and the snapshot taken for this
+                            # replication has no reason to stay
+                            raise ReplicationError(f"Could not send {snap} to {job.host}")
                         log.info("Successfully replicated %s to %s", name, snap)
                         schedule_log[action][name] = now
                     except Exception as e:
@@ -448,17 +449,24 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                             parsed.text,
                         )
 
-                    purge(Arg(name=[name], pattern=[parsed.text], dryrun=False), test=test)
-                    log.info("Finished purging")
+                    if purge(Arg(name=[name], pattern=[parsed.text], dryrun=False), test=test):
+                        log.info("Finished purging")
+                    else:
+                        log.warning("Could not purge the snapshots of %s", name)
                     schedule_log[action][name] = now
                 else:  # a Synchronize, the only job left
                     log.info("Starting scheduled synchronization of %s", name)
                     hosts = list(job.hosts)
                     # do a snapshot to save state before pulling data
                     snap = snapshot(Arg(name=[name]), test=test)
+                    if not snap:
+                        log.info("Could not snapshot %s", name)
+                        continue
                     log.debug("Successfully snapshotted to %s", snap)
-                    sync(Arg(volumes=[name], hosts=hosts), test=test)
-                    log.debug("End of %s synchronization from %s", name, hosts)
+                    if sync(Arg(volumes=[name], hosts=hosts), test=test):
+                        log.debug("End of %s synchronization from %s", name, hosts)
+                    else:
+                        log.warning("Could not synchronize %s from %s", name, hosts)
                     schedule_log[action][name] = now
             except CalledProcessError as e:
                 log.error(
