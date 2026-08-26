@@ -4,6 +4,18 @@ CHANGELOG
 3.13 (unreleased)
 *****************
 
+- The scheduler now remembers between two daemons when each job last ran. That
+  date lived in memory alone, and since a job the running daemon has never run
+  starts at once, every restart ran everything that was scheduled: a daily
+  purge on each reboot, a replication on each update of the plugin. It is now
+  written to ``/var/lib/buttervolume/lastruns.csv``, one line per volume and
+  action, next to the volumes rather than in the configuration. The restart
+  that brings this version still runs everything once, since there is no file
+  to read that day, and the ones after it pick the jobs up where they were
+  left. A job that leaves the schedule, or whose deprecated purge pattern is
+  converted, leaves its date behind: it costs a line, and that date is what
+  comes back if the job comes back.
+
 - A scheduled purge that failed is now tried again at the next scheduler
   round. Its date was written down whether it had worked or not, so a failure
 - A scheduled job the running daemon has never run now runs at once, instead

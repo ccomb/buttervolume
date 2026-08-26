@@ -18,7 +18,8 @@ cleanup_test_dir() {
     # simply refuse, and rm takes care of them below.
     sudo find "$LOCAL_TEST_DIR" -mindepth 1 -depth -type d \
         -exec btrfs subvolume delete {} \; > /dev/null 2>&1 || true
-    sudo rm -rf "$LOCAL_TEST_DIR"/volumes "$LOCAL_TEST_DIR"/snapshots "$LOCAL_TEST_DIR"/received
+    sudo rm -rf "$LOCAL_TEST_DIR"/volumes "$LOCAL_TEST_DIR"/snapshots \
+        "$LOCAL_TEST_DIR"/received "$LOCAL_TEST_DIR"/lastruns.csv
     # Left alone when it is a mount point, which is what the help text above
     # tells people to set up.
     rmdir "$LOCAL_TEST_DIR" 2> /dev/null || true
@@ -55,6 +56,7 @@ export BUTTERVOLUME_LOCAL_TEST=1
 export BUTTERVOLUME_VOLUMES_PATH="$LOCAL_TEST_DIR/volumes/"
 export BUTTERVOLUME_SNAPSHOTS_PATH="$LOCAL_TEST_DIR/snapshots/"
 export BUTTERVOLUME_TEST_REMOTE_PATH="$LOCAL_TEST_DIR/received/"
+export BUTTERVOLUME_LAST_RUNS="$LOCAL_TEST_DIR/lastruns.csv"
 
 # Setup virtual environment if it doesn't exist
 if [ ! -d ".venv" ]; then

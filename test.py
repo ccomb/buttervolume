@@ -42,10 +42,19 @@ from buttervolume.plugin import (
     VOLUMES_PATH,
 )
 from buttervolume.purge import Pattern, compute_purges
-from buttervolume.schedule import Entry, Job, read_rows, read_schedule, write_schedule
+from buttervolume.schedule import (
+    Entry,
+    Job,
+    read_last_runs,
+    read_rows,
+    read_schedule,
+    write_last_runs,
+    write_schedule,
+)
 
 # check that the target dir is btrfs
 SCHEDULE = plugin.SCHEDULE = tempfile.mkstemp()[1]
+LAST_RUNS = tempfile.mkstemp()[1]
 PREFIX_TEST_VOLUME = "buttervolume-test-"
 
 
@@ -87,6 +96,8 @@ class TestCase(unittest.TestCase):
 
     def setUp(self):
         with open(SCHEDULE, "w") as f:
+            f.truncate()
+        with open(LAST_RUNS, "w") as f:
             f.truncate()
         self.app = TestApp(cli.app)
         # Check that the target dir is BTRFS - skip tests if not
@@ -182,14 +193,16 @@ class TestCase(unittest.TestCase):
         with patch("buttervolume.cli.send") as mock_send:
             mock_send.side_effect = slow_send
             # run the scheduler in a separate thread
-            t = threading.Thread(target=runjobs, args=(SCHEDULE, True))
+            t = threading.Thread(
+                target=runjobs, args=(SCHEDULE, True), kwargs={"last_runs": LAST_RUNS}
+            )
             t.start()
             # wait for the replication to start
             time.sleep(1)
             # check that the replication is in progress
             self.assertIn(name, cli.ReplicationInProgress)
             # run the scheduler again
-            runjobs(SCHEDULE, True)
+            runjobs(SCHEDULE, True, last_runs=LAST_RUNS)
             # check that the second replication was skipped
             mock_send.assert_called_once()
             # wait for the replication to finish
@@ -261,7 +274,7 @@ class TestCase(unittest.TestCase):
         )
         with patch("buttervolume.cli.send") as mock_send:
             mock_send.side_effect = Exception("replication failed")
-            runjobs(SCHEDULE, True)
+            runjobs(SCHEDULE, True, last_runs=LAST_RUNS)
         mock_send.assert_called_once()
         # the snapshot created for the failed replication was removed
         snapshots = [s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")]
@@ -286,7 +299,7 @@ class TestCase(unittest.TestCase):
             # what the client answers when the endpoint fills the Err field
             mock_send.return_value = False
             with self.assertLogs(level=logging.INFO) as log_capture:
-                runjobs(SCHEDULE, True)
+                runjobs(SCHEDULE, True, last_runs=LAST_RUNS)
 
         self.assertFalse(any("Successfully replicated" in msg for msg in log_capture.output))
         self.assertTrue(any("Replication failed" in msg for msg in log_capture.output))
@@ -578,7 +591,7 @@ class TestCase(unittest.TestCase):
             lines = f.readlines()
             self.assertEqual(lines[1], f"{name2},snapshot,60,True\n")
         # run the scheduler jobs
-        runjobs(SCHEDULE, test=True)
+        runjobs(SCHEDULE, test=True, last_runs=LAST_RUNS)
         # check we have two snapshots
         self.assertEqual(
             2,
@@ -599,9 +612,9 @@ class TestCase(unittest.TestCase):
         schedule = json.loads(resp.body.decode())["Schedule"]
         self.assertEqual(len(schedule), 1)
         # simulate the last snapshot is 1 day in the past
-        schedule_log = {"snapshot": {name2: datetime.now() - timedelta(days=1)}}
+        write_last_runs(LAST_RUNS, {"snapshot": {name2: datetime.now() - timedelta(days=1)}})
         # run the scheduler jobs and check we only have one more snapshot
-        runjobs(SCHEDULE, test=True, schedule_log=schedule_log)
+        runjobs(SCHEDULE, test=True, last_runs=LAST_RUNS)
         self.assertEqual(
             3,
             len(
@@ -643,9 +656,11 @@ class TestCase(unittest.TestCase):
             json.dumps({"Name": "boo", "Action": "replicate:localhost", "Timer": 120}),
         )
         # simulate the last replicate is 1 day in the past
-        schedule_log = {"replicate:localhost": {name: datetime.now() - timedelta(days=1)}}
+        write_last_runs(
+            LAST_RUNS, {"replicate:localhost": {name: datetime.now() - timedelta(days=1)}}
+        )
         # run the scheduler jobs jobs and check we only have two more snapshots
-        runjobs(SCHEDULE, test=True, schedule_log=schedule_log)
+        runjobs(SCHEDULE, test=True, last_runs=LAST_RUNS)
         self.assertEqual(
             2,
             len(
@@ -978,9 +993,9 @@ class TestCase(unittest.TestCase):
             "/VolumeDriver.Schedule",
             json.dumps({"Name": name, "Action": "purge:2h", "Timer": 60}),
         )
-        schedule_log = {"purge:2h": {name: datetime.now() - timedelta(days=1)}}
+        write_last_runs(LAST_RUNS, {"purge:2h": {name: datetime.now() - timedelta(days=1)}})
         nb_snaps = len(os.listdir(SNAPSHOTS_PATH))
-        runjobs(config=SCHEDULE, test=True, schedule_log=schedule_log)
+        runjobs(config=SCHEDULE, test=True, last_runs=LAST_RUNS)
         self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps - 17)
         # unschedule
         self.app.post(
@@ -1000,13 +1015,13 @@ class TestCase(unittest.TestCase):
             "/VolumeDriver.Schedule",
             json.dumps({"Name": name, "Action": "purge:2h:2h", "Timer": 60}),
         )
-        schedule_log = {"purge:2h:2h": {name: datetime.now() - timedelta(days=1)}}
+        write_last_runs(LAST_RUNS, {"purge:2h:2h": {name: datetime.now() - timedelta(days=1)}})
         nb_snaps = len(os.listdir(SNAPSHOTS_PATH))
 
         # This should work (with warning) because scheduler uses backward compatibility
 
         with self.assertLogs(level=logging.WARNING) as log_capture:
-            runjobs(config=SCHEDULE, test=True, schedule_log=schedule_log)
+            runjobs(config=SCHEDULE, test=True, last_runs=LAST_RUNS)
 
         # Check that warning was logged
         self.assertTrue(
@@ -1035,13 +1050,14 @@ class TestCase(unittest.TestCase):
         self.create_a_volume_with_a_file(name)
         with open(SCHEDULE, "w") as f:
             f.write(f"{name},purge:2h,60,True\n")
-        schedule_log = {}
 
         with patch("buttervolume.cli.purge", return_value=False) as failing_purge:
-            runjobs(config=SCHEDULE, test=True, schedule_log=schedule_log)
-            runjobs(config=SCHEDULE, test=True, schedule_log=schedule_log)
+            runjobs(config=SCHEDULE, test=True, last_runs=LAST_RUNS)
+            runjobs(config=SCHEDULE, test=True, last_runs=LAST_RUNS)
 
         self.assertEqual(failing_purge.call_count, 2)
+        # nothing written down for a job that failed, not even across a restart
+        self.assertEqual(read_last_runs(LAST_RUNS), {})
 
     def test_a_synchronization_that_could_not_pull_waits_for_its_turn(self):
         """A purge that failed can be tried again for free, a pull cannot
@@ -1055,11 +1071,10 @@ class TestCase(unittest.TestCase):
         self.create_a_volume_with_a_file(name)
         with open(SCHEDULE, "w") as f:
             f.write(f"{name},synchronize:localhost,60,True\n")
-        schedule_log = {}
 
         with patch("buttervolume.cli.sync", return_value=False) as failing_sync:
-            runjobs(config=SCHEDULE, test=True, schedule_log=schedule_log)
-            runjobs(config=SCHEDULE, test=True, schedule_log=schedule_log)
+            runjobs(config=SCHEDULE, test=True, last_runs=LAST_RUNS)
+            runjobs(config=SCHEDULE, test=True, last_runs=LAST_RUNS)
 
         self.assertEqual(failing_sync.call_count, 1)
         snapshots = [s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")]
@@ -1078,10 +1093,29 @@ class TestCase(unittest.TestCase):
         with open(SCHEDULE, "w") as f:
             f.write(f"{name},snapshot,{weekly},True\n")
 
-        runjobs(config=SCHEDULE, test=True, schedule_log={})
+        runjobs(config=SCHEDULE, test=True, last_runs=LAST_RUNS)
 
         snapshots = os.listdir(SNAPSHOTS_PATH)
         self.assertTrue(any(snap.startswith(name + "@") for snap in snapshots))
+
+    def test_the_scheduler_picks_its_jobs_up_where_it_left_them(self):
+        """The date of a job that ran used to die with the daemon
+
+        Since a line nobody has a date for starts at once, a restart ran
+        everything that was scheduled, whatever its period. The two rounds
+        below share nothing but the file, which is what a restart leaves.
+        """
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        with open(SCHEDULE, "w") as f:
+            f.write(f"{name},snapshot,60,True\n")
+
+        runjobs(config=SCHEDULE, test=True, last_runs=LAST_RUNS)
+        runjobs(config=SCHEDULE, test=True, last_runs=LAST_RUNS)
+
+        snapshots = [s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")]
+        self.assertEqual(len(snapshots), 1)
+        self.assertIn(name, read_last_runs(LAST_RUNS)["snapshot"])
 
     def test_an_unknown_scheduled_action_is_reported(self):
         """A misspelled action in the schedule must be said out loud
@@ -1097,7 +1131,7 @@ class TestCase(unittest.TestCase):
         nb_snaps = len(os.listdir(SNAPSHOTS_PATH))
 
         with self.assertLogs(level=logging.WARNING) as log_capture:
-            runjobs(config=SCHEDULE, test=True)
+            runjobs(config=SCHEDULE, test=True, last_runs=LAST_RUNS)
 
         self.assertTrue(
             any(
@@ -1124,7 +1158,7 @@ class TestCase(unittest.TestCase):
             f.write(f"{healthy},snapshot,60,True\n")
 
         with self.assertLogs(level=logging.WARNING) as log_capture:
-            runjobs(config=SCHEDULE, test=True)
+            runjobs(config=SCHEDULE, test=True, last_runs=LAST_RUNS)
 
         self.assertTrue(any("Invalid schedule line" in msg for msg in log_capture.output))
         snapshots = os.listdir(SNAPSHOTS_PATH)
@@ -1186,7 +1220,7 @@ class TestCase(unittest.TestCase):
         nb_snaps = len(os.listdir(SNAPSHOTS_PATH))
 
         with self.assertLogs(level=logging.WARNING) as log_capture:
-            runjobs(config=SCHEDULE, test=True)
+            runjobs(config=SCHEDULE, test=True, last_runs=LAST_RUNS)
 
         self.assertTrue(any("replicate:backup_host" in msg for msg in log_capture.output))
         self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps)
@@ -1270,13 +1304,14 @@ class TestCase(unittest.TestCase):
             json.dumps({"Name": "boo", "Action": "synchronize:localhost", "Timer": 120}),
         )
         # simulate the last synchronize is 1 day in the past
-        schedule_log = {
-            "synchronize:localhost,wronghost.mlf": {name: datetime.now() - timedelta(days=1)}
-        }
+        write_last_runs(
+            LAST_RUNS,
+            {"synchronize:localhost,wronghost.mlf": {name: datetime.now() - timedelta(days=1)}},
+        )
         with TemporaryDirectory(path=remote_path) as remote_path:
             with open(join(remote_path, "foobar"), "w") as f:
                 f.write("test sync")
-            runjobs(SCHEDULE, test=True, schedule_log=schedule_log)
+            runjobs(SCHEDULE, test=True, last_runs=LAST_RUNS)
         # make sure a snapshot has occured before rsync
         snapshots = [s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name)]
         self.assertEqual(1, len(snapshots))
@@ -1452,6 +1487,15 @@ class TestWhatIsDue(unittest.TestCase):
         now = datetime(2026, 8, 26, 12, 0)
         self.assertTrue(is_due(self.hourly(), now - timedelta(minutes=60), now))
 
+    def test_a_last_run_later_than_the_clock_is_not_believed(self):
+        """A host that booted with its clock ahead used to stop its own jobs
+
+        The date is written down and now outlives the daemon, so a job whose
+        last run sits in the future would wait for a day that never comes.
+        """
+        now = datetime(2026, 8, 26, 12, 0)
+        self.assertTrue(is_due(self.hourly(), now + timedelta(days=365), now))
+
 
 class TestRunningAJob(unittest.TestCase):
     """Which function runs which kind of job"""
@@ -1496,7 +1540,7 @@ class TestScheduleFile(unittest.TestCase):
             self.assertEqual(f.read(), "www,snapshot,60,True\r\nwww,purge:2h,120,False\r\n")
 
     def test_an_interrupted_write_leaves_the_previous_schedule_alone(self):
-        """This file is the only state outside BTRFS, and half of it is none of it"""
+        """A schedule is what a daemon owes its volumes, and half of it is none of it"""
         content = "www,snapshot,60,True\r\nwww,purge:2h,120,False\r\n"
         path = self.schedule_file(content)
 
@@ -1605,6 +1649,66 @@ class TestScheduleFile(unittest.TestCase):
                 f.read(),
                 "www,purge:2h,60,True\r\nwww,replicat:node2,60,True\r\nwww,snapshot,60,False\r\n",
             )
+
+
+class TestLastRunsFile(unittest.TestCase):
+    """The date of the last run of each job, kept between two daemons"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.tmpdir.name, "lastruns.csv")
+        self.addCleanup(self.tmpdir.cleanup)
+
+    def test_a_date_survives_being_written_and_read_back(self):
+        dates = {
+            "snapshot": {"www": datetime(2026, 8, 26, 12, 0)},
+            "purge:4h:1d:1w": {"www": datetime(2026, 8, 26, 2, 0, 7, 900011)},
+        }
+        write_last_runs(self.path, dates)
+        self.assertEqual(read_last_runs(self.path), dates)
+
+    def test_a_line_nobody_can_read_only_forgets_its_own_job(self):
+        """A job we have no date for runs at once: one run too many, never one too few"""
+        with open(self.path, "w", newline="") as f:
+            f.write(
+                "www,snapshot,not a date\r\nwww,purge:2h\r\nwww,replicate:node2,2026-08-26T12:00:00\r\n"
+            )
+
+        with self.assertLogs(level=logging.WARNING):
+            dates = read_last_runs(self.path)
+
+        self.assertEqual(dates, {"replicate:node2": {"www": datetime(2026, 8, 26, 12, 0)}})
+
+    def test_a_date_carrying_a_time_zone_is_refused_like_an_unreadable_one(self):
+        """The clock it would be compared to has none, and comparing them raises"""
+        with open(self.path, "w", newline="") as f:
+            f.write("www,snapshot,2026-08-26T12:00:00+02:00\r\n")
+
+        with self.assertLogs(level=logging.WARNING):
+            self.assertEqual(read_last_runs(self.path), {})
+
+    def test_a_file_that_is_not_there_says_so(self):
+        """A first start and a file somebody deleted are the caller's business"""
+        with self.assertRaises(FileNotFoundError):
+            read_last_runs(self.path)
+
+    def test_the_directory_is_made_on_the_first_start(self):
+        path = os.path.join(self.tmpdir.name, "made", "lastruns.csv")
+        write_last_runs(path, {"snapshot": {"www": datetime(2026, 8, 26, 12, 0)}})
+        self.assertEqual(read_last_runs(path)["snapshot"]["www"], datetime(2026, 8, 26, 12, 0))
+
+    def test_a_leftover_temporary_file_says_which_file_it_comes_from(self):
+        """Two files are written here, and a temporary named after the other one lies"""
+
+        def rows():
+            yield ["www", "snapshot", "2026-08-26T12:00:00"]
+            raise OSError("No space left on device")
+
+        with patch("buttervolume.schedule.os.unlink"), self.assertRaises(OSError):
+            schedule.write_rows(self.path, rows())
+        left = os.listdir(self.tmpdir.name)
+        self.assertEqual(len(left), 1)
+        self.assertTrue(left[0].startswith("lastruns.csv."), left)
 
 
 class TemporaryDirectory(tempfile.TemporaryDirectory):

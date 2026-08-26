@@ -12,9 +12,12 @@ a synchronization or a purge. Reading that file, and reading what each of its
 lines asks for, is ``schedule.py``'s business. What is left here is done in two
 steps that do not mix: ``is_due`` decides, from a line, a date and a clock,
 without touching anything; ``run_job`` does the work, one function per kind of
-job. ``schedule.csv`` is the only state the plugin keeps outside BTRFS; when
-a job last ran, and which replications are under way, live in memory alone and
-are forgotten when the daemon stops.
+job. The two files the plugin keeps outside BTRFS are both read and written in
+``schedule.py``: ``schedule.csv``, which says what to run, and ``lastruns.csv``,
+where the scheduler writes down the date of every job that succeeded. It reads
+that second file at each round rather than remembering anything, so a daemon
+that stops picks its jobs up where it left them. Only the replications under
+way live in memory, and a daemon that stops has none.
 """
 
 import argparse
@@ -43,6 +46,7 @@ from webtest import TestApp
 
 from buttervolume import ReplicationError, ValidationError
 from buttervolume.plugin import (
+    LAST_RUNS,
     LOGLEVEL,
     SCHEDULE,
     SNAPSHOTS_PATH,
@@ -59,8 +63,10 @@ from buttervolume.schedule import (
     Replicate,
     Snapshot,
     Synchronize,
+    read_last_runs,
     read_rows,
     read_schedule,
+    write_last_runs,
     write_schedule,
 )
 
@@ -354,7 +360,15 @@ def is_due(entry, last, now):
     Pure: a line, a date and a clock, nothing else. The clock is given rather
     than read here, so deciding what is due can be tested without a volume, a
     daemon or a filesystem.
+
+    A last run later than the clock is a date nobody can believe, and the job
+    is due. A host that boots with its clock ahead writes such a date, that
+    date now outlives the daemon, and without this the job would wait for a
+    day that never comes without a word. Running it says so and writes a date
+    that can be read.
     """
+    if last > now:
+        return True
     return now >= last + timedelta(minutes=int(entry.timer))
 
 
@@ -468,9 +482,14 @@ def run_synchronize(job: Synchronize, name, test=False):
     return True
 
 
-def runjobs(config=SCHEDULE, test=False, schedule_log=None):
-    if schedule_log is None:
-        schedule_log = {"snapshot": {}, "replicate": {}, "synchronize": {}}
+def runjobs(config=SCHEDULE, test=False, last_runs=LAST_RUNS):
+    """Run what the schedule owes, and write down the date of what succeeded.
+
+    The dates are read from their file at each round and written back to it as
+    soon as a job succeeds, so nothing of them is kept between two rounds: a
+    daemon that stops forgets nothing, and a job done at the beginning of a
+    round survives a machine that stops in the middle of it.
+    """
     log.info("New scheduler job at %s", datetime.now())
     # open the config and launch the tasks
     if not exists(config):
@@ -479,6 +498,7 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None):
         else:
             log.warning("No config file %s", config)
         return
+    dates = read_last_runs(last_runs) if exists(last_runs) else {}
     name = action = timer = ""
     # run each action in the schedule if time is elapsed since the last one
     for row in read_rows(config):
@@ -496,15 +516,16 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None):
                 log.warning("Skipping the unknown action %s of %s: %s", action, name, e)
                 continue
             now = datetime.now()
-            # a line this scheduler never ran is due: it is the first thing
-            # a freshly started daemon owes the volumes it was given
-            last = schedule_log.setdefault(action, {}).get(name)
+            # a line nobody has a date for is due: it is the first thing a
+            # daemon owes a volume it was just given
+            last = dates.setdefault(action, {}).get(name)
             if last is not None and not is_due(entry, last, now):
                 continue
             # the date a job answered for, so one that failed and can be
             # tried again comes back at the next round
             if run_job(job, name, test=test):
-                schedule_log[action][name] = now
+                dates[action][name] = now
+                write_last_runs(last_runs, dates)
         except CalledProcessError as e:
             log.error(
                 "Error processing scheduler action file %s "
@@ -529,17 +550,16 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None):
             )
 
 
-def scheduler(event, config=SCHEDULE, test=False, timer=TIMER):
+def scheduler(event, config=SCHEDULE, test=False, timer=TIMER, last_runs=LAST_RUNS):
     """Read the scheduler config and apply it, then run scheduler again."""
     log.info(f"Starting the scheduler thread. Next jobs will run in {timer} seconds")
-    schedule_log = {"snapshot": {}, "replicate": {}, "synchronize": {}}
     while not test and not event.is_set():
         if event.wait(timeout=float(timer)):
             log.info("Terminating the scheduler thread")
             return
         else:
             try:
-                runjobs(config, test, schedule_log=schedule_log)
+                runjobs(config, test, last_runs=last_runs)
             except Exception:
                 log.critical("An exception occured in the scheduling job")
                 log.critical(traceback.format_exc())

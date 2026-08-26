@@ -64,6 +64,7 @@ SNAPSHOTS_PATH = getconfig(config, "SNAPSHOTS_PATH", "/var/lib/buttervolume/snap
 TEST_REMOTE_PATH = getconfig(config, "TEST_REMOTE_PATH", "/var/lib/buttervolume/received/")
 SCHEDULE = getconfig(config, "SCHEDULE", "/etc/buttervolume/schedule.csv")
 SCHEDULE_DISABLED = f"{SCHEDULE}.disabled"
+LAST_RUNS = getconfig(config, "LAST_RUNS", "/var/lib/buttervolume/lastruns.csv")
 # Support both old and new plugin names for backward compatibility
 DRIVERNAME = getconfig(config, "DRIVERNAME", "ccomb/buttervolume:latest")
 LEGACY_DRIVERNAME = "anybox/buttervolume:latest"
