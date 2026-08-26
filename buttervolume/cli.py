@@ -8,8 +8,9 @@ daemon exists, and ``scheduled --auto-convert-old-patterns`` rewrites
 ``schedule.csv`` in place.
 
 The scheduler reads ``schedule.csv`` and runs what is due there: a snapshot, a
-replication, a synchronization or a purge. That file is the only state the
-plugin keeps outside BTRFS.
+replication, a synchronization or a purge. What each line asks for is read in
+``schedule.py``, so the loop below only has to run it. That file is the only
+state the plugin keeps outside BTRFS.
 """
 
 import argparse
@@ -47,6 +48,7 @@ from buttervolume.plugin import (
     VOLUMES_PATH,
 )
 from buttervolume.purge import Pattern
+from buttervolume.schedule import Job, Purge, Replicate, Snapshot
 
 VERSION = "3.13.0"
 logging.basicConfig(level=LOGLEVEL)
@@ -380,6 +382,11 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                 if not enabled:
                     log.info(f"{action} of {name} is disabled")
                     continue
+                try:
+                    job = Job.parse(action)
+                except ValidationError as e:
+                    log.warning("Skipping the unknown action %s of %s: %s", action, name, e)
+                    continue
                 now = datetime.now()
                 # just starting, we consider beeing late on snapshots
                 schedule_log.setdefault(action, {})
@@ -388,7 +395,7 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                 if now < last + timedelta(minutes=int(timer)):
                     continue
                 # choose and run the right action
-                if action == "snapshot":
+                if isinstance(job, Snapshot):
                     log.info("Starting scheduled snapshot of %s", name)
                     snap = snapshot(Arg(name=[name]), test=test)
                     if not snap:
@@ -396,11 +403,10 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                         continue
                     log.info("Successfully snapshotted to %s", snap)
                     schedule_log[action][name] = now
-                elif action.startswith("replicate:"):
+                elif isinstance(job, Replicate):
                     if name in ReplicationInProgress:
                         log.warning(f"Replication of {name} already in progress, skipping.")
                         continue
-                    _, host = action.split(":")
                     log.info("Starting scheduled replication of %s", name)
                     snap = None
                     try:
@@ -410,7 +416,7 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                             log.info("Could not snapshot %s", name)
                             continue
                         log.info("Successfully snapshotted to %s", snap)
-                        send(Arg(snapshot=[snap], host=[host]), test=test)
+                        send(Arg(snapshot=[snap], host=[job.host]), test=test)
                         log.info("Successfully replicated %s to %s", name, snap)
                         schedule_log[action][name] = now
                     except Exception as e:
@@ -426,20 +432,14 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                                 )
                     finally:
                         ReplicationInProgress.remove(name)
-                elif action.startswith("purge:"):
-                    _, pattern = action.split(":", 1)
+                elif isinstance(job, Purge):
+                    parsed = job.pattern
                     log.info(
                         "Starting scheduled purge of %s with pattern %s",
                         name,
-                        pattern,
+                        parsed.deprecated or parsed.text,
                     )
-
                     # A deprecated pattern is converted and reported, not refused
-                    try:
-                        parsed = Pattern.parse(pattern)
-                    except ValidationError as e:
-                        log.error(f"Invalid purge pattern '{pattern}': {e}")
-                        continue
                     if parsed.deprecated:
                         log.warning(
                             "Converting deprecated pattern '%s' to '%s'. Please update your "
@@ -451,17 +451,15 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
                     purge(Arg(name=[name], pattern=[parsed.text], dryrun=False), test=test)
                     log.info("Finished purging")
                     schedule_log[action][name] = now
-                elif action.startswith("synchronize:"):
+                else:  # a Synchronize, the only job left
                     log.info("Starting scheduled synchronization of %s", name)
-                    hosts = action.split(":")[1].split(",")
+                    hosts = list(job.hosts)
                     # do a snapshot to save state before pulling data
                     snap = snapshot(Arg(name=[name]), test=test)
                     log.debug("Successfully snapshotted to %s", snap)
                     sync(Arg(volumes=[name], hosts=hosts), test=test)
                     log.debug("End of %s synchronization from %s", name, hosts)
                     schedule_log[action][name] = now
-                else:
-                    log.warning("Skipping the unknown action %s of %s", action, name)
             except CalledProcessError as e:
                 log.error(
                     "Error processing scheduler action file %s "
