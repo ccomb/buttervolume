@@ -190,7 +190,7 @@ class TestCase(unittest.TestCase):
             time.sleep(2)
             return True
 
-        with patch("buttervolume.cli.send") as mock_send:
+        with patch("buttervolume.api.send") as mock_send:
             mock_send.side_effect = slow_send
             # run the scheduler in a separate thread
             t = threading.Thread(
@@ -272,7 +272,7 @@ class TestCase(unittest.TestCase):
             "/VolumeDriver.Schedule",
             json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 1}),
         )
-        with patch("buttervolume.cli.send") as mock_send:
+        with patch("buttervolume.api.send") as mock_send:
             mock_send.side_effect = Exception("replication failed")
             runjobs(SCHEDULE, True, last_runs=LAST_RUNS)
         mock_send.assert_called_once()
@@ -295,7 +295,7 @@ class TestCase(unittest.TestCase):
             "/VolumeDriver.Schedule",
             json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 1}),
         )
-        with patch("buttervolume.cli.send") as mock_send:
+        with patch("buttervolume.api.send") as mock_send:
             # what the client answers when the endpoint fills the Err field
             mock_send.return_value = False
             with self.assertLogs(level=logging.INFO) as log_capture:
@@ -1051,7 +1051,7 @@ class TestCase(unittest.TestCase):
         with open(SCHEDULE, "w") as f:
             f.write(f"{name},purge:2h,60,True\n")
 
-        with patch("buttervolume.cli.purge", return_value=False) as failing_purge:
+        with patch("buttervolume.api.purge", return_value=False) as failing_purge:
             runjobs(config=SCHEDULE, test=True, last_runs=LAST_RUNS)
             runjobs(config=SCHEDULE, test=True, last_runs=LAST_RUNS)
 
@@ -1072,7 +1072,7 @@ class TestCase(unittest.TestCase):
         with open(SCHEDULE, "w") as f:
             f.write(f"{name},synchronize:localhost,60,True\n")
 
-        with patch("buttervolume.cli.sync", return_value=False) as failing_sync:
+        with patch("buttervolume.api.sync", return_value=False) as failing_sync:
             runjobs(config=SCHEDULE, test=True, last_runs=LAST_RUNS)
             runjobs(config=SCHEDULE, test=True, last_runs=LAST_RUNS)
 
