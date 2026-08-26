@@ -466,7 +466,7 @@ def run_synchronize(job: Synchronize, name, test=False):
     return True
 
 
-def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
+def runjobs(config=SCHEDULE, test=False, schedule_log=None):
     if schedule_log is None:
         schedule_log = {"snapshot": {}, "replicate": {}, "synchronize": {}}
     if exists(SCHEDULE_DISABLED):
@@ -537,7 +537,7 @@ def scheduler(event, config=SCHEDULE, test=False, timer=TIMER):
             return
         else:
             try:
-                runjobs(config, test, schedule_log=schedule_log, timer=timer)
+                runjobs(config, test, schedule_log=schedule_log)
             except Exception:
                 log.critical("An exception occured in the scheduling job")
                 log.critical(traceback.format_exc())
