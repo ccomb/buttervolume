@@ -12,6 +12,14 @@ subvolumes: snapshot, restore, clone, replicate. Python, Bottle, argparse.
   the authoritative route list. `@route` is defined there too, and is not
   Bottle's: it decodes the request, logs it, and turns any failure into the
   `Err` field of a 200 answer, which is the only shape a client can read.
+- `buttervolume/names.py`: what a volume name and a snapshot name are worth.
+  `volume@timestamp`, plus `@host` for the trace of a send, is read and written
+  here alone, and the validation lives here too. Pure functions: no disk, no
+  configuration, the date format arrives as an argument. The paths stay in
+  `plugin.py`, which is where the directories are configured, and a name is
+  validated there as it becomes a path.
+- `buttervolume/__init__.py`: the errors the API answers with. They sit below
+  everything so that both `names.py` and `plugin.py` can raise them.
 - `buttervolume/btrfs.py`: the subvolume operations, and `run_safe`, the guarded
   way to call the `btrfs` command. One path escapes it and needs the same care:
   `run_btrfs_send_receive` in `plugin.py` builds its own send and receive to

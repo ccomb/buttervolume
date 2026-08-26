@@ -17,8 +17,14 @@ from unittest.mock import MagicMock, patch
 
 from webtest import TestApp
 
-from buttervolume import btrfs, cli, plugin
+from buttervolume import ValidationError, btrfs, cli, plugin
 from buttervolume.cli import init_btrfs, runjobs
+from buttervolume.names import (
+    Snapshot,
+    new_snapshot,
+    sent_snapshots,
+    snapshots_of,
+)
 from buttervolume.plugin import (
     DTFORMAT,
     SNAPSHOTS_PATH,
@@ -635,6 +641,39 @@ class TestCase(unittest.TestCase):
             json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 0}),
         )
 
+    def test_restore_of_a_volume_takes_its_latest_snapshot_or_says_why_not(self):
+        """A snapshot nobody can name again hides no other one behind it"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        path = join(VOLUMES_PATH, name)
+        self.create_a_volume_with_a_file(name)
+        self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name}))
+        # a snapshot from an older version, taken under a date format holding
+        # a space, and more recent than the one above
+        legacy = f"{name}@2999-01-01 00:00:00"
+        btrfs.Subvolume(path).snapshot(join(SNAPSHOTS_PATH, legacy), readonly=True)
+        with open(join(path, "foobar"), "w") as f:
+            f.write("modified foobar")
+        # restoring by volume name must not silently fall back to the snapshot
+        # underneath: the latest one is unusable, and the answer says so
+        resp = jsonloads(
+            self.app.post("/VolumeDriver.Snapshot.Restore", json.dumps({"Name": name})).body
+        )
+        self.assertTrue(resp["Err"])
+        with open(join(path, "foobar")) as f:
+            self.assertEqual(f.read(), "modified foobar")
+        # cleanup
+        btrfs.Subvolume(join(SNAPSHOTS_PATH, legacy)).delete()
+
+    def test_the_trace_of_a_send_cannot_be_sent(self):
+        """Sending it back would name its own trace, and only fail once sent"""
+        resp = jsonloads(
+            self.app.post(
+                "/VolumeDriver.Snapshot.Send",
+                json.dumps({"Name": "www@2026-01-01T00:00:00.000000@node2", "Host": "node2"}),
+            ).body
+        )
+        self.assertIn("trace of a send", resp["Err"])
+
     def test_restore(self):
         """Check we can restore a snapshot as a volume"""
         # create a volume with a file
@@ -1078,6 +1117,46 @@ class TestCase(unittest.TestCase):
     def test_capabilities(self):
         rsp = jsonloads(self.app.post("/VolumeDriver.Capabilities", "{}").body)
         self.assertEqual(rsp.get("Capabilities", {}).get("Scope"), "local")
+
+
+class TestNames(unittest.TestCase):
+    """The naming rules, read and written without touching a filesystem"""
+
+    def test_a_snapshot_name_survives_a_round_trip(self):
+        for name in ("www@2026-08-26T10:00:00.000000", "www@2026-08-26T10:00:00.000000@node2"):
+            self.assertEqual(str(Snapshot.parse(name)), name)
+        snapshot = Snapshot.parse("www@2026-08-26T10:00:00.000000")
+        self.assertEqual(snapshot.volume, "www")
+        self.assertEqual(snapshot.timestamp, "2026-08-26T10:00:00.000000")
+        self.assertIsNone(snapshot.host)
+        self.assertEqual(snapshot.taken_at(DTFORMAT), datetime(2026, 8, 26, 10, 0, 0))
+
+    def test_a_name_that_is_not_a_snapshot_name_is_refused(self):
+        for bad in ("", "www", "@", "www@", "a@b@c@d", "www@$(reboot)", "www@2026-08-26 10:00"):
+            with self.assertRaises(ValidationError, msg=f"{bad!r} was accepted"):
+                Snapshot.parse(bad)
+
+    def test_a_new_snapshot_is_named_after_the_moment_it_is_taken(self):
+        now = datetime(2026, 8, 26, 10, 0, 0)
+        self.assertEqual(str(new_snapshot("www", DTFORMAT, now)), "www@2026-08-26T10:00:00.000000")
+        # a date format the API could not read back is refused, not created
+        with self.assertRaises(ValidationError):
+            new_snapshot("www", "%Y-%m-%d %H:%M:%S", now)
+
+    def test_the_snapshots_of_a_volume_are_its_own(self):
+        names = ["www@t1", "wwwbis@t1", "www@t2@node2", "other@t3"]
+        self.assertEqual(snapshots_of("www", names), ["www@t1", "www@t2@node2"])
+        # a name we could not have written is still shown: hiding it would let
+        # the caller take www@t1 for the most recent snapshot of the volume
+        self.assertEqual(snapshots_of("www", ["www@t 2", "www@t1"]), ["www@t 2", "www@t1"])
+
+    def test_the_parent_of_a_send_is_the_last_one_sent_to_that_host(self):
+        names = ["www@t1", "www@t2", "www@t1@node2", "www@t2@node2", "other@t3@node2"]
+        already_sent = sent_snapshots("www", "node2", names)
+        self.assertEqual([str(s) for s in already_sent], ["www@t1@node2", "www@t2@node2"])
+        self.assertEqual(str(already_sent[-1].without_host()), "www@t2")
+        # and the trace this send will leave behind
+        self.assertEqual(str(Snapshot.parse("www@t3").sent_to("node2")), "www@t3@node2")
 
 
 class TemporaryDirectory(tempfile.TemporaryDirectory):
