@@ -6,6 +6,16 @@ CHANGELOG
 
 - A scheduled purge that failed is now tried again at the next scheduler
   round. Its date was written down whether it had worked or not, so a failure
+- A scheduled job the running daemon has never run now runs at once, instead
+  of starting a day late. The scheduler keeps in memory when each job last ran
+  and forgets it when it stops, and for a job it had never seen it pretended
+  the last run was exactly one day old. A job of a shorter period therefore
+  started immediately, while a weekly one waited six days after every restart
+  and a monthly one twenty-nine, without a word.
+
+- A scheduled purge that failed, and a scheduled synchronization that could
+  not pull the data back, are now tried again at the next scheduler round.
+  Their date was written down whether they had worked or not, so a failure
   meant waiting a whole period, usually a day, before anything tried again,
   while a failed snapshot or replication came back a minute later. A purge
   leaves nothing behind when it fails, so there is nothing to gain from
