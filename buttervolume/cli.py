@@ -7,14 +7,13 @@ scheduler thread beside it, ``init`` builds a BTRFS filesystem before any
 daemon exists, and ``scheduled --auto-convert-old-patterns`` rewrites
 ``schedule.csv`` in place.
 
-The scheduler reads ``schedule.csv`` and runs what is due there: a snapshot, a
-replication, a synchronization or a purge. What each line asks for is read in
-``schedule.py``, so the loop below only has to run it. That file is the only
-state the plugin keeps outside BTRFS.
+The scheduler runs what is due in ``schedule.csv``: a snapshot, a replication,
+a synchronization or a purge. Reading that file, and reading what each of its
+lines asks for, is ``schedule.py``'s business, so the loop below only has to
+run it. That file is the only state the plugin keeps outside BTRFS.
 """
 
 import argparse
-import csv
 import json
 import logging
 import os
@@ -25,6 +24,8 @@ import sys
 import threading
 import traceback
 import urllib.parse
+from contextlib import suppress
+from dataclasses import replace
 from datetime import datetime, timedelta
 from os.path import exists
 from subprocess import CalledProcessError
@@ -37,7 +38,6 @@ from webtest import TestApp
 
 from buttervolume import ReplicationError, ValidationError
 from buttervolume.plugin import (
-    FIELDS,
     LOGLEVEL,
     SCHEDULE,
     SCHEDULE_DISABLED,
@@ -48,7 +48,16 @@ from buttervolume.plugin import (
     VOLUMES_PATH,
 )
 from buttervolume.purge import Pattern
-from buttervolume.schedule import Job, Purge, Replicate, Snapshot
+from buttervolume.schedule import (
+    Entry,
+    Job,
+    Purge,
+    Replicate,
+    Snapshot,
+    read_rows,
+    read_schedule,
+    write_schedule,
+)
 
 VERSION = "3.13.0"
 logging.basicConfig(level=LOGLEVEL)
@@ -139,35 +148,30 @@ def _auto_convert_old_patterns():
         print(f"Schedule file not found: {config}")
         return False
 
-    # Read current schedule
-    updates = []
-    needs_conversion = False
+    entries = read_schedule(config)
+    converted = []
+    for entry in entries:
+        # An action nobody can read is left exactly as it is: this command
+        # converts patterns, it does not clean up the file.
+        job = None
+        with suppress(ValidationError):
+            job = Job.parse(entry.action)
+        if isinstance(job, Purge) and job.pattern.deprecated:
+            converted.append(replace(entry, action=f"purge:{job.pattern.text}"))
+            print(
+                f"Found deprecated pattern for volume '{entry.name}': "
+                f"'{job.pattern.deprecated}' -> '{job.pattern.text}'"
+            )
+        else:
+            converted.append(entry)
 
-    with open(config) as f:
-        for line in csv.DictReader(f, fieldnames=FIELDS):
-            name, action, timer, enabled = line.values()
-
-            if action.startswith("purge:"):
-                _, pattern = action.split(":", 1)
-                try:
-                    parsed = Pattern.parse(pattern)
-                except ValidationError:
-                    continue
-                if parsed.deprecated:
-                    new_action = f"purge:{parsed.text}"
-                    updates.append((name, action, new_action))
-                    needs_conversion = True
-                    print(
-                        f"Found deprecated pattern for volume '{name}': "
-                        f"'{pattern}' -> '{parsed.text}'"
-                    )
-
-    if not needs_conversion:
+    count = sum(1 for old, new in zip(entries, converted) if old != new)
+    if not count:
         print("No deprecated patterns found in schedule.")
         return True
 
     # Ask for confirmation
-    print(f"\nFound {len(updates)} deprecated pattern(s). Convert them? (y/N): ", end="")
+    print(f"\nFound {count} deprecated pattern(s). Convert them? (y/N): ", end="")
     response = input().strip().lower()
 
     if response not in ("y", "yes"):
@@ -180,26 +184,9 @@ def _auto_convert_old_patterns():
     shutil.copy2(config, backup_file)
     print(f"Created backup: {backup_file}")
 
-    # Read and update the file
-    lines = []
-    with open(config) as f:
-        for line in csv.DictReader(f, fieldnames=FIELDS):
-            name, action, timer, enabled = line.values()
+    write_schedule(config, converted)
 
-            # Check if this line needs updating
-            for update_name, old_action, new_action in updates:
-                if name == update_name and action == old_action:
-                    action = new_action
-                    break
-
-            lines.append([name, action, timer, enabled])
-
-    # Write updated file
-    with open(config, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerows(lines)
-
-    print(f"Successfully converted {len(updates)} pattern(s).")
+    print(f"Successfully converted {count} pattern(s).")
     print("Updated schedule file. The scheduler will use the new patterns on next run.")
     return True
 
@@ -371,125 +358,126 @@ def runjobs(config=SCHEDULE, test=False, schedule_log=None, timer=TIMER):
         return
     name = action = timer = ""
     # run each action in the schedule if time is elapsed since the last one
-    with open(config) as f:
-        for line in csv.DictReader(f, fieldnames=FIELDS):
+    for row in read_rows(config):
+        try:
+            # read here rather than in one go above: a line nobody can read
+            # must not stop the lines that follow it
+            entry = Entry.parse(row)
+            name, action, timer = entry.name, entry.action, entry.timer
+            if not entry.enabled:
+                log.info(f"{action} of {name} is disabled")
+                continue
             try:
-                name, action, timer, enabled = line.values()
-                enabled = enabled != "False"
-                if not enabled:
-                    log.info(f"{action} of {name} is disabled")
+                job = Job.parse(action)
+            except ValidationError as e:
+                log.warning("Skipping the unknown action %s of %s: %s", action, name, e)
+                continue
+            now = datetime.now()
+            # just starting, we consider beeing late on snapshots
+            schedule_log.setdefault(action, {})
+            schedule_log[action].setdefault(name, now - timedelta(1))
+            last = schedule_log[action][name]
+            if now < last + timedelta(minutes=int(timer)):
+                continue
+            # choose and run the right action
+            if isinstance(job, Snapshot):
+                log.info("Starting scheduled snapshot of %s", name)
+                snap = snapshot(Arg(name=[name]), test=test)
+                if not snap:
+                    log.info("Could not snapshot %s", name)
                     continue
+                log.info("Successfully snapshotted to %s", snap)
+                schedule_log[action][name] = now
+            elif isinstance(job, Replicate):
+                if name in ReplicationInProgress:
+                    log.warning(f"Replication of {name} already in progress, skipping.")
+                    continue
+                log.info("Starting scheduled replication of %s", name)
+                snap = None
                 try:
-                    job = Job.parse(action)
-                except ValidationError as e:
-                    log.warning("Skipping the unknown action %s of %s: %s", action, name, e)
-                    continue
-                now = datetime.now()
-                # just starting, we consider beeing late on snapshots
-                schedule_log.setdefault(action, {})
-                schedule_log[action].setdefault(name, now - timedelta(1))
-                last = schedule_log[action][name]
-                if now < last + timedelta(minutes=int(timer)):
-                    continue
-                # choose and run the right action
-                if isinstance(job, Snapshot):
-                    log.info("Starting scheduled snapshot of %s", name)
+                    ReplicationInProgress.add(name)
                     snap = snapshot(Arg(name=[name]), test=test)
                     if not snap:
                         log.info("Could not snapshot %s", name)
                         continue
                     log.info("Successfully snapshotted to %s", snap)
+                    if not send(Arg(snapshot=[snap], host=[job.host]), test=test):
+                        # the same road as an exception: the error is
+                        # already logged, and the snapshot taken for this
+                        # replication has no reason to stay
+                        raise ReplicationError(f"Could not send {snap} to {job.host}")
+                    log.info("Successfully replicated %s to %s", name, snap)
                     schedule_log[action][name] = now
-                elif isinstance(job, Replicate):
-                    if name in ReplicationInProgress:
-                        log.warning(f"Replication of {name} already in progress, skipping.")
-                        continue
-                    log.info("Starting scheduled replication of %s", name)
-                    snap = None
-                    try:
-                        ReplicationInProgress.add(name)
-                        snap = snapshot(Arg(name=[name]), test=test)
-                        if not snap:
-                            log.info("Could not snapshot %s", name)
-                            continue
-                        log.info("Successfully snapshotted to %s", snap)
-                        if not send(Arg(snapshot=[snap], host=[job.host]), test=test):
-                            # the same road as an exception: the error is
-                            # already logged, and the snapshot taken for this
-                            # replication has no reason to stay
-                            raise ReplicationError(f"Could not send {snap} to {job.host}")
-                        log.info("Successfully replicated %s to %s", name, snap)
-                        schedule_log[action][name] = now
-                    except Exception as e:
-                        log.warning("Replication failed: %s", e)
-                        # remove snapshot that was created for the failed replication
-                        if snap:
-                            if remove(Arg(name=[snap]), test=test):
-                                log.info("Removed snapshot %s for failed replication", snap)
-                            else:
-                                log.warning(
-                                    "Could not remove snapshot %s of the failed replication",
-                                    snap,
-                                )
-                    finally:
-                        ReplicationInProgress.remove(name)
-                elif isinstance(job, Purge):
-                    parsed = job.pattern
-                    log.info(
-                        "Starting scheduled purge of %s with pattern %s",
-                        name,
-                        parsed.deprecated or parsed.text,
+                except Exception as e:
+                    log.warning("Replication failed: %s", e)
+                    # remove snapshot that was created for the failed replication
+                    if snap:
+                        if remove(Arg(name=[snap]), test=test):
+                            log.info("Removed snapshot %s for failed replication", snap)
+                        else:
+                            log.warning(
+                                "Could not remove snapshot %s of the failed replication",
+                                snap,
+                            )
+                finally:
+                    ReplicationInProgress.remove(name)
+            elif isinstance(job, Purge):
+                parsed = job.pattern
+                log.info(
+                    "Starting scheduled purge of %s with pattern %s",
+                    name,
+                    parsed.deprecated or parsed.text,
+                )
+                # A deprecated pattern is converted and reported, not refused
+                if parsed.deprecated:
+                    log.warning(
+                        "Converting deprecated pattern '%s' to '%s'. Please update your "
+                        "schedule using 'buttervolume scheduled --auto-convert-old-patterns'.",
+                        parsed.deprecated,
+                        parsed.text,
                     )
-                    # A deprecated pattern is converted and reported, not refused
-                    if parsed.deprecated:
-                        log.warning(
-                            "Converting deprecated pattern '%s' to '%s'. Please update your "
-                            "schedule using 'buttervolume scheduled --auto-convert-old-patterns'.",
-                            parsed.deprecated,
-                            parsed.text,
-                        )
 
-                    if purge(Arg(name=[name], pattern=[parsed.text], dryrun=False), test=test):
-                        log.info("Finished purging")
-                    else:
-                        log.warning("Could not purge the snapshots of %s", name)
-                    schedule_log[action][name] = now
-                else:  # a Synchronize, the only job left
-                    log.info("Starting scheduled synchronization of %s", name)
-                    hosts = list(job.hosts)
-                    # do a snapshot to save state before pulling data
-                    snap = snapshot(Arg(name=[name]), test=test)
-                    if not snap:
-                        log.info("Could not snapshot %s", name)
-                        continue
-                    log.debug("Successfully snapshotted to %s", snap)
-                    if sync(Arg(volumes=[name], hosts=hosts), test=test):
-                        log.debug("End of %s synchronization from %s", name, hosts)
-                    else:
-                        log.warning("Could not synchronize %s from %s", name, hosts)
-                    schedule_log[action][name] = now
-            except CalledProcessError as e:
-                log.error(
-                    "Error processing scheduler action file %s "
-                    "name=%s, action=%s, timer=%s, "
-                    "exception=%s, stdout=%s, stderr=%s",
-                    config,
-                    name,
-                    action,
-                    timer,
-                    str(e),
-                    e.stdout,
-                    e.stderr,
-                )
-            except Exception as e:
-                log.error(
-                    "Error processing scheduler action file %s name=%s, action=%s, timer=%s\n%s",
-                    config,
-                    name,
-                    action,
-                    timer,
-                    str(e),
-                )
+                if purge(Arg(name=[name], pattern=[parsed.text], dryrun=False), test=test):
+                    log.info("Finished purging")
+                else:
+                    log.warning("Could not purge the snapshots of %s", name)
+                schedule_log[action][name] = now
+            else:  # a Synchronize, the only job left
+                log.info("Starting scheduled synchronization of %s", name)
+                hosts = list(job.hosts)
+                # do a snapshot to save state before pulling data
+                snap = snapshot(Arg(name=[name]), test=test)
+                if not snap:
+                    log.info("Could not snapshot %s", name)
+                    continue
+                log.debug("Successfully snapshotted to %s", snap)
+                if sync(Arg(volumes=[name], hosts=hosts), test=test):
+                    log.debug("End of %s synchronization from %s", name, hosts)
+                else:
+                    log.warning("Could not synchronize %s from %s", name, hosts)
+                schedule_log[action][name] = now
+        except CalledProcessError as e:
+            log.error(
+                "Error processing scheduler action file %s "
+                "name=%s, action=%s, timer=%s, "
+                "exception=%s, stdout=%s, stderr=%s",
+                config,
+                name,
+                action,
+                timer,
+                str(e),
+                e.stdout,
+                e.stderr,
+            )
+        except Exception as e:
+            log.error(
+                "Error processing scheduler action file %s name=%s, action=%s, timer=%s\n%s",
+                config,
+                name,
+                action,
+                timer,
+                str(e),
+            )
 
 
 def scheduler(event, config=SCHEDULE, test=False, timer=TIMER):
