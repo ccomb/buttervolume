@@ -25,7 +25,7 @@ from unittest.mock import MagicMock, patch
 
 from webtest import TestApp
 
-from buttervolume import ValidationError, btrfs, cli, plugin
+from buttervolume import ValidationError, btrfs, cli, plugin, schedule
 from buttervolume.cli import init_btrfs, runjobs
 from buttervolume.names import (
     Snapshot,
@@ -40,6 +40,7 @@ from buttervolume.plugin import (
     VOLUMES_PATH,
 )
 from buttervolume.purge import Pattern, compute_purges
+from buttervolume.schedule import Job
 
 # check that the target dir is btrfs
 SCHEDULE = plugin.SCHEDULE = tempfile.mkstemp()[1]
@@ -588,11 +589,6 @@ class TestCase(unittest.TestCase):
         resp = self.app.get("/VolumeDriver.Schedule.List")
         schedule = json.loads(resp.body.decode())["Schedule"]
         self.assertEqual(len(schedule), 0)
-        # unschedule
-        self.app.post(
-            "/VolumeDriver.Schedule",
-            json.dumps({"Name": name, "Action": "snapshot", "Timer": 0}),
-        )
 
     @unittest.skipIf(
         os.environ.get("BUTTERVOLUME_LOCAL_TEST"), "SSH not available in local test mode"
@@ -1025,6 +1021,46 @@ class TestCase(unittest.TestCase):
         )
         self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps)
 
+    def test_a_schedule_nobody_could_run_is_refused(self):
+        """The endpoint is where a schedule is written, so it is where it is judged"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        for req, expected in (
+            ({"Name": name, "Action": "replicat:localhost", "Timer": 60}, "Invalid action"),
+            ({"Name": name, "Action": "purge:5x", "Timer": 60}, "unknown unit"),
+            ({"Name": name, "Action": "snapshot", "Timer": "demain"}, "Invalid timer"),
+            ({"Name": name, "Action": "snapshot", "Timer": "²"}, "Invalid timer"),
+            ({"Name": name + "/../..", "Action": "snapshot", "Timer": 60}, "Invalid characters"),
+        ):
+            resp = self.app.post("/VolumeDriver.Schedule", json.dumps(req))
+            self.assertIn(expected, jsonloads(resp.body)["Err"])
+        # nothing of all this was written
+        resp = self.app.get("/VolumeDriver.Schedule.List")
+        self.assertEqual(jsonloads(resp.body)["Schedule"], [])
+
+    def test_unscheduling_a_job_nobody_scheduled_is_refused(self):
+        """Saying yes to that is how a typo passes for a job that is running"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        for timer in ("0", "delete", "pause", "resume"):
+            resp = self.app.post(
+                "/VolumeDriver.Schedule",
+                json.dumps({"Name": name, "Action": "snapshot", "Timer": timer}),
+            )
+            self.assertIn("is scheduled", jsonloads(resp.body)["Err"])
+
+    def test_a_job_written_before_this_validation_can_still_be_deleted(self):
+        """An action the endpoint now refuses may already sit in the file"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        with open(SCHEDULE, "w") as f:
+            f.write(f"{name},replicat:localhost,60,True\n")
+
+        resp = self.app.post(
+            "/VolumeDriver.Schedule",
+            json.dumps({"Name": name, "Action": "replicat:localhost", "Timer": 0}),
+        )
+        self.assertEqual(jsonloads(resp.body)["Err"], "")
+        resp = self.app.get("/VolumeDriver.Schedule.List")
+        self.assertEqual(jsonloads(resp.body)["Schedule"], [])
+
     @unittest.skipIf(
         os.environ.get("BUTTERVOLUME_LOCAL_TEST"), "SSH not available in local test mode"
     )
@@ -1229,6 +1265,42 @@ class TestPurgePattern(unittest.TestCase):
         for text in ("", "2h:", "60m:plop:3000m", "5x", "²h", "4h:2h", "2h:120m", "2h:2h:4h"):
             with self.assertRaises(ValidationError):
                 Pattern.parse(text)
+
+
+class TestScheduledJob(unittest.TestCase):
+    """What a scheduled action asks for, read without touching a filesystem"""
+
+    def test_an_action_is_read_as_the_job_it_asks_for(self):
+        self.assertEqual(Job.parse("snapshot"), schedule.Snapshot("snapshot"))
+        self.assertEqual(
+            Job.parse("replicate:node2"), schedule.Replicate("replicate:node2", "node2")
+        )
+        self.assertEqual(
+            Job.parse("synchronize:node2,node3"),
+            schedule.Synchronize("synchronize:node2,node3", ("node2", "node3")),
+        )
+        purge_job = Job.parse("purge:4h:1d")
+        self.assertEqual(purge_job.pattern, Pattern.parse("4h:1d"))
+
+    def test_a_job_remembers_how_the_schedule_spells_it(self):
+        """The scheduler keys its own log on that text, deprecated spelling included"""
+        self.assertEqual(Job.parse("purge:2h:2h").text, "purge:2h:2h")
+        self.assertEqual(Job.parse("purge:2h:2h").pattern.text, "2h")
+
+    def test_an_action_nobody_could_run_is_refused(self):
+        for action in (
+            "",
+            "replicat:node2",
+            "snapshot:node2",
+            "snapshots",
+            "replicate",
+            "replicate:no host",
+            "purge:5x",
+            "purge:",
+            "synchronize:node2,",
+        ):
+            with self.assertRaises(ValidationError):
+                Job.parse(action)
 
 
 class TemporaryDirectory(tempfile.TemporaryDirectory):

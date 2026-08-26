@@ -9,6 +9,15 @@ CHANGELOG
   do this could never fire, so a misspelled ``replicat:host`` looked exactly
   like a replication that ran on time.
 
+- Scheduling a job that nobody could run is now refused instead of answered
+  with a success. A misspelled action such as ``replicat:host``, an unreadable
+  retention pattern, an invalid volume name or a timer that is not a number of
+  minutes used to be accepted, and the command reported nothing while either
+  writing a line the scheduler would silently ignore, or writing nothing at
+  all. Unscheduling, pausing or resuming a job that is not in the schedule is
+  refused for the same reason. A line already written stays possible to pause
+  and to delete, whatever it says.
+
 - Every endpoint now goes through a single decorator that decodes the request,
   logs it and turns any failure into the ``Err`` field of a 200 answer. Six
   routes, among them the scheduling ones and the snapshot send, used to answer
