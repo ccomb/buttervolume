@@ -1166,6 +1166,29 @@ class TestCase(unittest.TestCase):
         self.assertTrue(any(s.startswith(healthy) for s in snapshots))
         self.assertFalse(any(s.startswith(mangled) for s in snapshots))
 
+    def test_the_scheduler_names_the_line_it_could_not_read(self):
+        """The line at fault, not the one before it
+
+        The fields of a line are only filled once it has been read whole, so a
+        message built from them names the last line that could be read, which
+        is precisely the one that gave no trouble.
+        """
+        healthy = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        mangled = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(healthy)
+        with open(SCHEDULE, "w") as f:
+            f.write(f"{healthy},snapshot,60,True\n")
+            f.write(f"{mangled},snapshot,60,True,extra\n")
+
+        # the error alone: the healthy line announces itself at a lower level,
+        # and its name in the capture would say nothing about the error
+        with self.assertLogs(level=logging.ERROR) as log_capture:
+            runjobs(config=SCHEDULE, test=True, last_runs=LAST_RUNS)
+
+        error = "\n".join(log_capture.output)
+        self.assertIn(mangled, error)
+        self.assertNotIn(healthy, error)
+
     def test_a_schedule_nobody_could_run_is_refused(self):
         """The endpoint is where a schedule is written, so it is where it is judged"""
         name = PREFIX_TEST_VOLUME + uuid.uuid4().hex

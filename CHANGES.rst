@@ -4,6 +4,13 @@ CHANGELOG
 3.13 (unreleased)
 *****************
 
+- The scheduler now names the schedule line it could not read, instead of the
+  one before it. The name, the action and the timer are only filled once a line
+  has been read whole, so a line nobody could read was reported with the fields
+  of the last one that went through, which is precisely the line that gave no
+  trouble. The message now carries the line at fault, column by column,
+  including the ``Active`` one those three fields left out.
+
 - The scheduler now remembers between two daemons when each job last ran. That
   date lived in memory alone, and since a job the running daemon has never run
   starts at once, every restart ran everything that was scheduled: a daily
