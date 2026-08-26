@@ -1061,6 +1061,25 @@ class TestCase(unittest.TestCase):
         resp = self.app.get("/VolumeDriver.Schedule.List")
         self.assertEqual(jsonloads(resp.body)["Schedule"], [])
 
+    def test_a_host_the_schedule_can_no_longer_name_stops_the_job(self):
+        """A replication to a host that is refused now stops, and says so
+
+        Such a line could be written by an older version. It never replicated
+        anything, because the send refused the host too, but it did keep
+        snapshotting the volume every period while logging a success.
+        """
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        with open(SCHEDULE, "w") as f:
+            f.write(f"{name},replicate:backup_host,60,True\n")
+        nb_snaps = len(os.listdir(SNAPSHOTS_PATH))
+
+        with self.assertLogs(level=logging.WARNING) as log_capture:
+            runjobs(config=SCHEDULE, test=True)
+
+        self.assertTrue(any("replicate:backup_host" in msg for msg in log_capture.output))
+        self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps)
+
     @unittest.skipIf(
         os.environ.get("BUTTERVOLUME_LOCAL_TEST"), "SSH not available in local test mode"
     )
