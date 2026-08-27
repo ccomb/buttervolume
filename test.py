@@ -28,7 +28,7 @@ from unittest.mock import MagicMock, patch
 from webtest import TestApp
 
 from buttervolume import ValidationError, btrfs, cli, plugin, schedule, scheduler
-from buttervolume.cli import init_btrfs
+from buttervolume.init import init_btrfs
 from buttervolume.names import (
     Snapshot,
     new_snapshot,

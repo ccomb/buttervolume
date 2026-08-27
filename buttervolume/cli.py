@@ -4,8 +4,9 @@ Most commands are argparse subcommands that unpack what the terminal gave
 them, hand it to ``api.py`` and print what comes back, so the command line is
 a client of the same API as Docker and reads the same answers. Three do not:
 ``run`` starts waitress on that socket with the scheduler thread beside it,
-``init`` builds a BTRFS filesystem before any daemon exists, and ``scheduled
---auto-convert-old-patterns`` rewrites ``schedule.csv`` in place.
+``init`` prepares a BTRFS filesystem before any daemon exists, which is
+``init.py``'s business, and ``scheduled --auto-convert-old-patterns`` rewrites
+``schedule.csv`` in place.
 
 Nothing here knows how that call travels. Where the socket is, and what an
 answer is shaped like, is ``api.py``'s business, and ``scheduler.py`` calls it
@@ -22,7 +23,6 @@ import logging
 import os
 import shutil
 import signal
-import subprocess
 import sys
 import threading
 from contextlib import suppress
@@ -33,6 +33,7 @@ from waitress import serve
 
 from buttervolume import ValidationError, api
 from buttervolume.api import app
+from buttervolume.init import init_btrfs
 from buttervolume.plugin import (
     LOGLEVEL,
     SCHEDULE,
@@ -208,133 +209,6 @@ def shutdown(thread, event):
             log.warning("Could not remove socket %s: %s", SOCKET, e)
 
     sys.exit(0)  # Use exit code 0 for clean shutdown
-
-
-def init_btrfs(args):
-    """Initialize BTRFS filesystem for buttervolume"""
-    # Default path if no arguments provided
-    target_path = "/var/lib/buttervolume"
-
-    if args.file:
-        # Mode 1: Create BTRFS image file
-        if args.path:
-            print("ERROR: --file and --path cannot be used together")
-            return False
-
-        image_path = args.file
-        image_size = args.size
-
-        print(f"Creating BTRFS image file: {image_path} (size: {image_size})")
-
-        # Check if we can write to the target directory
-        parent_dir = os.path.dirname(image_path)
-        if not os.access(parent_dir, os.W_OK):
-            print(f"ERROR: No write permission to directory: {parent_dir}")
-            if parent_dir.startswith(("/var/", "/etc/", "/usr/")):
-                print("Try running as root or choose a path in your home directory")
-            return False
-
-        # Create the directory if it doesn't exist
-        try:
-            os.makedirs(parent_dir, exist_ok=True)
-        except PermissionError:
-            print(f"ERROR: Permission denied creating directory: {parent_dir}")
-            print("Try running as root or choose a path in your home directory")
-            return False
-
-        try:
-            # Create sparse file
-            subprocess.run(["truncate", "-s", image_size, image_path], check=True)
-
-            # Format as BTRFS
-            subprocess.run(["/usr/sbin/mkfs.btrfs", "-f", image_path], check=True)
-
-            print(f"Successfully created BTRFS image: {image_path}")
-            print(f"To use it, mount it to {target_path}:")
-            print(f"  sudo mount -o loop {image_path} {target_path}")
-
-        except subprocess.CalledProcessError as e:
-            print(f"ERROR: Failed to create BTRFS image: {e}")
-            return False
-    elif args.path:
-        # Mode 2: Use existing BTRFS partition/mount
-        target_path = args.path
-
-        if not os.path.exists(target_path):
-            print(f"ERROR: Path does not exist: {target_path}")
-            return False
-
-        # Check if we need root for this path
-        if target_path.startswith(("/var/", "/etc/", "/usr/")) and os.geteuid() != 0:
-            print("ERROR: Root privileges required for system paths")
-            print("Try running with sudo or use --file with a user-owned path")
-            return False
-
-        # Check if it's a BTRFS filesystem
-        try:
-            result = subprocess.run(
-                ["stat", "-f", "-c", "%T", target_path], capture_output=True, text=True, check=True
-            )
-            if "btrfs" not in result.stdout.lower():
-                print(f"ERROR: {target_path} is not on a BTRFS filesystem")
-                print("Either:")
-                print("  - Point to a BTRFS partition/mount using --path")
-                print("  - Create a BTRFS image file using --file")
-                return False
-        except subprocess.CalledProcessError:
-            print(f"ERROR: Cannot determine filesystem type for {target_path}")
-            return False
-
-    else:
-        # Mode 3: Default path - check if it's BTRFS
-        # Default path requires root
-        if os.geteuid() != 0:
-            print("ERROR: Root privileges required for default path /var/lib/buttervolume")
-            print("Either:")
-            print("  - Run with sudo")
-            print("  - Use --file ~/my-btrfs.img to create an image in your home directory")
-            return False
-
-        if not os.path.exists(target_path):
-            print(f"ERROR: Default path does not exist: {target_path}")
-            print("Either:")
-            print("  - Point to a BTRFS partition/mount using --path")
-            print("  - Create a BTRFS image file using --file")
-            return False
-
-        # Check if it's a BTRFS filesystem
-        try:
-            result = subprocess.run(
-                ["stat", "-f", "-c", "%T", target_path], capture_output=True, text=True, check=True
-            )
-            if "btrfs" not in result.stdout.lower():
-                print(f"ERROR: {target_path} is not on a BTRFS filesystem")
-                print("Either:")
-                print("  - Point to a BTRFS partition/mount using --path")
-                print("  - Create a BTRFS image file using --file")
-                return False
-        except subprocess.CalledProcessError:
-            print(f"ERROR: Cannot determine filesystem type for {target_path}")
-            return False
-
-    # Create required directories (only if we have a valid BTRFS path)
-    if not args.file:  # Don't create dirs for image file mode
-        required_dirs = [
-            os.path.join(target_path, "volumes"),
-            os.path.join(target_path, "snapshots"),
-            os.path.join(target_path, "config"),
-            os.path.join(target_path, "ssh"),
-        ]
-
-        print(f"Creating required directories in {target_path}...")
-        for dir_path in required_dirs:
-            os.makedirs(dir_path, exist_ok=True)
-            print(f"  Created: {dir_path}")
-
-        print(f"Successfully initialized buttervolume at {target_path}")
-        print("You can now start the plugin with: buttervolume run")
-
-    return True
 
 
 def run(_, test=False):
