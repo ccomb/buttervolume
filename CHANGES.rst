@@ -4,6 +4,13 @@ CHANGELOG
 3.13 (unreleased)
 *****************
 
+- Buttervolume now says it needs Python 3.11 or later. Nothing declared it, so
+  each version of ``uv`` invented its own floor and rewrote ``uv.lock`` on the
+  next command it was given, and an installation on an older Python failed on
+  the code instead of failing on the requirement. The plugin image has been
+  running 3.11 all along, which is the floor now written down; the classifiers
+  that still announced 3.8, 3.9 and 3.10 go with it.
+
 - The scheduler now names the schedule line it could not read, instead of the
   one before it. The name, the action and the timer are only filled once a line
   has been read whole, so a line nobody could read was reported with the fields
