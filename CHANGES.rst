@@ -4,6 +4,14 @@ CHANGELOG
 3.13 (unreleased)
 *****************
 
+- A purge no longer deletes what a replication needs. The trace of the last
+  send to a host is a snapshot like any other, with a date the purge could
+  read, so a retention pattern would delete it along with the snapshot it was
+  made from. The next send then found no parent and carried the whole volume
+  over the network again, which is exactly what an incremental send is there to
+  avoid. The pair is now kept whatever the pattern says, and the README says
+  that a host you stop replicating to leaves a pair to delete by hand.
+
 - Buttervolume now says it needs Python 3.11 or later. Nothing declared it, so
   each version of ``uv`` invented its own floor and rewrote ``uv.lock`` on the
   next command it was given, and an installation on an older Python failed on

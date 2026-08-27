@@ -19,7 +19,7 @@ import logging
 from dataclasses import dataclass
 
 from buttervolume import ValidationError
-from buttervolume.names import Snapshot
+from buttervolume.names import Snapshot, parsed
 
 log = logging.getLogger()
 
@@ -70,6 +70,16 @@ class Pattern:
 def compute_purges(snapshots, pattern, now, dtformat):
     """Return the list of snapshots this pattern condemns, at this moment."""
     snapshots = sorted(snapshots)
+    # a purge does not delete what a send still needs: the trace of a send, and
+    # the snapshot it was made from, which is the parent the next incremental
+    # send is built on. Both are taken out of the answer rather than out of the
+    # input, because a name missing from the input frees its timeframe below,
+    # and a neighbour that should die would survive in its place.
+    needed = set()
+    for s in parsed(snapshots):
+        if s.host:
+            needed.add(str(s))
+            needed.add(str(s.without_host()))
     ages = list(reversed(pattern.minutes))
     purge_list = []
     max_age = ages[0]
@@ -86,29 +96,26 @@ def compute_purges(snapshots, pattern, now, dtformat):
             continue
         snapshots_age.append(int(age.total_seconds()) / 60)
         valid_snapshots.append(s)
-    if not valid_snapshots:
-        return purge_list
-
     # A single specifier ("2h" -> [120]) deletes everything past the threshold
     if len(ages) == 1:
-        return [s for s, age in zip(valid_snapshots, snapshots_age) if age > ages[0]]
-
-    # Several specifiers ("2h:1d:1w" -> [10080, 1440, 120]) keep one snapshot
-    # per timeframe inside each segment.
-    # age segments = [(10080, 1440), (1440, 120)]
-    for age_segment in [(ages[i], ages[i + 1]) for i, _ in enumerate(ages[:-1])]:
-        last_timeframe = -1
-        for i, age in enumerate(snapshots_age):
-            # if the age is outside the age_segment, delete nothing.
-            # Only 70 and 90 are inside the age_segment (60, 180)
-            if age > age_segment[0] < max_age or age < age_segment[1]:
-                continue
-            # Now get the timeframe number of the snapshot.
-            # Ages 70 and 90 are in the same timeframe (70//60 == 90//60)
-            timeframe = age // age_segment[1]
-            # delete if we already had a snapshot in the same timeframe
-            # or if the snapshot is very old
-            if timeframe == last_timeframe or age > max_age:
-                purge_list.append(valid_snapshots[i])
-            last_timeframe = timeframe
-    return purge_list
+        purge_list = [s for s, age in zip(valid_snapshots, snapshots_age) if age > ages[0]]
+    else:
+        # Several specifiers ("2h:1d:1w" -> [10080, 1440, 120]) keep one snapshot
+        # per timeframe inside each segment.
+        # age segments = [(10080, 1440), (1440, 120)]
+        for age_segment in [(ages[i], ages[i + 1]) for i, _ in enumerate(ages[:-1])]:
+            last_timeframe = -1
+            for i, age in enumerate(snapshots_age):
+                # if the age is outside the age_segment, delete nothing.
+                # Only 70 and 90 are inside the age_segment (60, 180)
+                if age > age_segment[0] < max_age or age < age_segment[1]:
+                    continue
+                # Now get the timeframe number of the snapshot.
+                # Ages 70 and 90 are in the same timeframe (70//60 == 90//60)
+                timeframe = age // age_segment[1]
+                # delete if we already had a snapshot in the same timeframe
+                # or if the snapshot is very old
+                if timeframe == last_timeframe or age > max_age:
+                    purge_list.append(valid_snapshots[i])
+                last_timeframe = timeframe
+    return [s for s in purge_list if s not in needed]

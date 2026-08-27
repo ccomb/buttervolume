@@ -925,6 +925,30 @@ class TestCase(unittest.TestCase):
         cleanup_snapshots()
         self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name}))
 
+    def test_a_purge_does_not_delete_what_a_send_still_needs(self):
+        """The trace of a send, and its snapshot, outlive a purge of their age"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        # a snapshot older than the pattern below, and the trace of its send
+        old = (datetime.now() - timedelta(hours=3)).strftime(DTFORMAT)
+        snap = f"{name}@{old}"
+        trace = f"{snap}@127.1.2.3"
+        volume = btrfs.Subvolume(join(VOLUMES_PATH, name))
+        volume.snapshot(join(SNAPSHOTS_PATH, snap), readonly=True)
+        volume.snapshot(join(SNAPSHOTS_PATH, trace), readonly=True)
+
+        resp = self.app.post(
+            "/VolumeDriver.Snapshots.Purge",
+            json.dumps({"Name": name, "Pattern": "2h"}),
+        )
+        self.assertEqual(jsonloads(resp.body), {"Err": ""})
+        # without them the next send would have no parent and would cross the
+        # network with the whole volume again
+        self.assertEqual(
+            sorted(s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")),
+            sorted([snap, trace]),
+        )
+
     def test_every_route_answers_json(self):
         """One decorator, one contract: no request turns a route into a 500.
 
@@ -1479,6 +1503,46 @@ class TestPurgePattern(unittest.TestCase):
         for text in ("", "2h:", "60m:plop:3000m", "5x", "²h", "4h:2h", "2h:120m", "2h:2h:4h"):
             with self.assertRaises(ValidationError):
                 Pattern.parse(text)
+
+
+class TestWhatAPurgeCondemns(unittest.TestCase):
+    """What a purge spares for a send, read without touching a filesystem"""
+
+    now = datetime(2026, 8, 26, 12, 0, 0)
+
+    def aged(self, hours):
+        """The timestamp of a snapshot taken that many hours ago"""
+        return (self.now - timedelta(hours=hours)).strftime(DTFORMAT)
+
+    def condemned(self, names, pattern):
+        return compute_purges(names, Pattern.parse(pattern), self.now, DTFORMAT)
+
+    def test_a_trace_and_the_snapshot_it_was_made_from_are_spared(self):
+        t1, t2 = self.aged(3), self.aged(4)
+        names = [f"www@{t1}", f"www@{t1}@node2", f"www@{t2}"]
+        self.assertEqual(self.condemned(names, "2h"), [f"www@{t2}"])
+
+    def test_a_trace_whose_snapshot_is_already_gone_is_spared_too(self):
+        t1 = self.aged(3)
+        self.assertEqual(self.condemned([f"www@{t1}@node2"], "2h"), [])
+
+    def test_a_trace_does_not_spare_a_snapshot_that_is_not_its_own(self):
+        """Same moment, another volume: the trace says nothing about it"""
+        t1 = self.aged(3)
+        names = [f"www@{t1}@node2", f"other@{t1}"]
+        self.assertEqual(self.condemned(names, "2h"), [f"other@{t1}"])
+
+    def test_traces_to_several_hosts_spare_the_same_snapshot_once(self):
+        t1, t2 = self.aged(3), self.aged(4)
+        names = [f"www@{t1}", f"www@{t1}@node2", f"www@{t1}@node3", f"www@{t2}"]
+        self.assertEqual(self.condemned(names, "2h"), [f"www@{t2}"])
+
+    def test_a_spared_snapshot_still_takes_up_its_timeframe(self):
+        """Spared at the end: sparing it earlier would free the timeframe it
+        occupies, and the neighbour condemned as its duplicate would survive"""
+        old, young = self.aged(6), self.aged(5)
+        names = [f"www@{old}", f"www@{old}@node2", f"www@{young}"]
+        self.assertEqual(self.condemned(names, "4h:1d"), [f"www@{young}"])
 
 
 class TestScheduledJob(unittest.TestCase):
