@@ -520,6 +520,12 @@ consuming a lot of bandwith or disk space::
 to live in ``/var/lib/buttervolume/snapshots`` and is replicated to the same path on
 the remote host.
 
+What the remote host already holds is read from the trace kept locally after
+each send, named ``<volume>@<datetime>@<host>``, and nothing is asked of the
+remote host. So a snapshot whose trace is there is not sent a second time, and
+a copy deleted on the remote host behind Buttervolume's back goes unnoticed:
+delete the trace as well, and the next send carries the whole volume again.
+
 
 ``<host>`` is the hostname or IP address of the remote host. The snapshot is
 currently sent using BTRFS send/receive through ssh, with an ssh server direcly

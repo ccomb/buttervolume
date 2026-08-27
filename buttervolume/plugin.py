@@ -376,8 +376,17 @@ def snapshot_send(req):
     # the previous send to that host left a trace: its snapshot is the parent
     # this one can be sent against
     already_sent = sent_snapshots(snapshot.volume, remote_host, os.listdir(SNAPSHOTS_PATH))
-    latest = str(already_sent[-1].without_host()) if already_sent else None
-    parent_path = snapshotpath(latest) if latest else None
+    if snapshot in {t.without_host() for t in already_sent}:
+        # a trace says this very snapshot is already there. Sending it again
+        # would name its own parent, the remote receive would refuse it, and
+        # the fallback below would delete the good remote copy before sending
+        # the whole volume again. Any of the traces, not just the last one:
+        # two of them coexist when a send stopped between writing the new one
+        # and deleting the old.
+        log.info("Snapshot %s is already on %s, nothing to send", snapshot_name, remote_host)
+        return {"Err": ""}
+    latest = already_sent[-1].without_host() if already_sent else None
+    parent_path = snapshotpath(str(latest)) if latest else None
     port = os.getenv("SSH_PORT", "1122")
 
     try:

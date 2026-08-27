@@ -519,6 +519,56 @@ class TestCase(unittest.TestCase):
             btrfs.Subvolume(remote_path2).show()["Parent UUID"],
         )
 
+    def test_a_snapshot_the_remote_already_has_is_not_sent_again(self):
+        """The trace of a send is what says the remote already holds it"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        resp = self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name}))
+        snapshot = jsonloads(resp.body)["Snapshot"]
+        # the trace a previous send to that host left behind
+        trace = f"{snapshot}@localhost"
+        btrfs.Subvolume(join(SNAPSHOTS_PATH, snapshot)).snapshot(
+            join(SNAPSHOTS_PATH, trace), readonly=True
+        )
+
+        resp = self.app.post(
+            "/VolumeDriver.Snapshot.Send",
+            json.dumps({"Name": snapshot, "Host": "localhost", "Test": True}),
+        )
+        self.assertEqual(jsonloads(resp.body), {"Err": ""})
+        # nothing crossed the network, and no second trace was written
+        self.assertEqual([s for s in os.listdir(TEST_REMOTE_PATH) if s.startswith(name)], [])
+        self.assertEqual(
+            sorted(s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")),
+            sorted([snapshot, trace]),
+        )
+
+    @unittest.skipIf(
+        os.environ.get("BUTTERVOLUME_LOCAL_TEST"), "SSH not available in local test mode"
+    )
+    def test_sending_the_same_snapshot_twice_leaves_the_remote_copy_whole(self):
+        """The second send is refused rather than deleting the copy of the first"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        resp = self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name}))
+        snapshot = jsonloads(resp.body)["Snapshot"]
+        for _ in range(2):
+            resp = self.app.post(
+                "/VolumeDriver.Snapshot.Send",
+                json.dumps({"Name": snapshot, "Host": "localhost", "Test": True}),
+            )
+            self.assertEqual(jsonloads(resp.body), {"Err": ""})
+        self.assertEqual(
+            [s for s in os.listdir(TEST_REMOTE_PATH) if s.startswith(name)], [snapshot]
+        )
+
+        # restoring the remote copy is the only proof that it is whole: a copy
+        # deleted and sent again counts exactly the same as one left alone
+        target = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        btrfs.Subvolume(join(TEST_REMOTE_PATH, snapshot)).snapshot(join(VOLUMES_PATH, target))
+        with open(join(VOLUMES_PATH, target, "foobar")) as f:
+            self.assertEqual(f.read(), "foobar")
+
     def test_snapshot(self):
         """Check we can snapshot a volume"""
         # create a volume with a file
