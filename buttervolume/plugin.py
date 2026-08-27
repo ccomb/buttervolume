@@ -473,8 +473,15 @@ def volume_snapshot(req):
                 log.info("%s has not changed since %s", name, previous)
                 return {"Err": "", "Snapshot": str(previous), "Created": False}
         except BtrfsError as e:
-            # a comparison we could not make is no reason to lose a snapshot
-            log.warning("Could not tell whether %s changed since %s: %s", name, previous, e)
+            # neither a comparison we could not make nor a deletion that failed
+            # is a reason to lose a snapshot: the copy is kept, and answered as
+            # the one this call took
+            log.warning(
+                "Keeping %s, which could not be compared with %s or dropped: %s",
+                timestamped,
+                previous,
+                e,
+            )
     return {"Err": "", "Snapshot": timestamped, "Created": True}
 
 
