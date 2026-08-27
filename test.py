@@ -575,6 +575,189 @@ class TestCase(unittest.TestCase):
         with open(join(VOLUMES_PATH, target, "foobar")) as f:
             self.assertEqual(f.read(), "foobar")
 
+    def test_a_host_that_cannot_answer_is_not_read_as_an_empty_host(self):
+        """A listing nobody could read is an error, never a host with nothing"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        # port 1 is refused, like a host that is down
+        with patch.dict(os.environ, {"SSH_PORT": "1"}):
+            resp = jsonloads(
+                self.app.post(
+                    "/VolumeDriver.Snapshot.Receive",
+                    json.dumps({"Name": name, "Host": "localhost", "Test": True}),
+                ).body
+            )
+        self.assertIn("Could not read the snapshots of localhost", resp["Err"])
+        # and nothing was invented: no snapshot, and no answer naming one
+        self.assertNotIn("Snapshot", resp)
+        self.assertEqual([s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")], [])
+
+    def test_receiving_a_snapshot_we_already_have_transfers_nothing(self):
+        """A snapshot already here is answered without crossing the network"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        snapshot = jsonloads(
+            self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body
+        )["Snapshot"]
+
+        with patch("buttervolume.plugin.snapshots_on_remote") as listing:
+            listing.return_value = [snapshot]
+            with patch("buttervolume.plugin.run_btrfs_receive") as transfer:
+                resp = jsonloads(
+                    self.app.post(
+                        "/VolumeDriver.Snapshot.Receive",
+                        json.dumps({"Name": name, "Host": "localhost", "Test": True}),
+                    ).body
+                )
+        transfer.assert_not_called()
+        self.assertEqual(resp, {"Err": "", "Snapshot": snapshot})
+        # and that host is now known to hold it, so a send will not carry it
+        self.assertIn(f"{snapshot}@localhost", os.listdir(SNAPSHOTS_PATH))
+
+    def test_a_leftover_from_an_interrupted_receive_is_not_taken_for_a_snapshot(self):
+        """What a receive left half written carries the name of a whole one"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        half = f"{name}@2026-02-01T00:00:00.000000"
+        # what btrfs receive leaves behind when it stops early: the final name,
+        # and a subvolume still open to writing
+        btrfs.Subvolume(join(VOLUMES_PATH, name)).snapshot(join(SNAPSHOTS_PATH, half))
+
+        with patch("buttervolume.plugin.snapshots_on_remote") as listing:
+            listing.return_value = [half]
+            resp = jsonloads(
+                self.app.post(
+                    "/VolumeDriver.Snapshot.Receive",
+                    json.dumps({"Name": name, "Host": "localhost", "Test": True}),
+                ).body
+            )
+        self.assertIn("holds half a volume", resp["Err"])
+        # and it is still there: nothing is deleted on our own initiative
+        self.assertTrue(os.path.exists(join(SNAPSHOTS_PATH, half)))
+
+    @unittest.skipIf(
+        os.environ.get("BUTTERVOLUME_LOCAL_TEST"), "SSH not available in local test mode"
+    )
+    def test_a_host_that_holds_nothing_says_so(self):
+        """A host that answered and keeps nothing is not an error, but no snapshot"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        resp = jsonloads(
+            self.app.post(
+                "/VolumeDriver.Snapshot.Receive",
+                json.dumps({"Name": name, "Host": "localhost", "Test": True}),
+            ).body
+        )
+        self.assertIn("keeps no snapshot", resp["Err"])
+
+    @unittest.skipIf(
+        os.environ.get("BUTTERVOLUME_LOCAL_TEST"), "SSH not available in local test mode"
+    )
+    def test_a_snapshot_received_from_another_host_restores(self):
+        """What comes back from another host is the volume it was taken from"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        snapshot = jsonloads(
+            self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body
+        )["Snapshot"]
+        self.app.post(
+            "/VolumeDriver.Snapshot.Send",
+            json.dumps({"Name": snapshot, "Host": "localhost", "Test": True}),
+        )
+        # this host loses the snapshot and the volume drifts away from it
+        btrfs.Subvolume(join(SNAPSHOTS_PATH, snapshot)).delete()
+        with open(join(VOLUMES_PATH, name, "foobar"), "w") as f:
+            f.write("lost")
+
+        resp = jsonloads(
+            self.app.post(
+                "/VolumeDriver.Snapshot.Receive",
+                json.dumps({"Name": name, "Host": "localhost", "Test": True}),
+            ).body
+        )
+        self.assertEqual(resp["Snapshot"], snapshot)
+        self.app.post("/VolumeDriver.Snapshot.Restore", json.dumps({"Name": snapshot}))
+        with open(join(VOLUMES_PATH, name, "foobar")) as f:
+            self.assertEqual(f.read(), "foobar")
+
+    @unittest.skipIf(
+        os.environ.get("BUTTERVOLUME_LOCAL_TEST"), "SSH not available in local test mode"
+    )
+    def test_receiving_again_only_carries_the_difference(self):
+        """The second receive is built on the snapshot both sides already hold"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        first = jsonloads(self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body)[
+            "Snapshot"
+        ]
+        self.app.post(
+            "/VolumeDriver.Snapshot.Send",
+            json.dumps({"Name": first, "Host": "localhost", "Test": True}),
+        )
+        with open(join(VOLUMES_PATH, name, "foobar"), "w") as f:
+            f.write("changed foobar")
+        second = jsonloads(
+            self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body
+        )["Snapshot"]
+        self.app.post(
+            "/VolumeDriver.Snapshot.Send",
+            json.dumps({"Name": second, "Host": "localhost", "Test": True}),
+        )
+        # this host keeps the first snapshot and loses the second one
+        btrfs.Subvolume(join(SNAPSHOTS_PATH, second)).delete()
+        with open(join(VOLUMES_PATH, name, "foobar"), "w") as f:
+            f.write("lost")
+
+        with self.assertLogs(level=logging.INFO) as captured:
+            resp = jsonloads(
+                self.app.post(
+                    "/VolumeDriver.Snapshot.Receive",
+                    json.dumps({"Name": name, "Host": "localhost", "Test": True}),
+                ).body
+            )
+        self.assertEqual(resp["Snapshot"], second)
+        # only the difference crossed: the snapshot both sides hold was asked
+        # for as the parent, and nothing fell back to the whole volume. Both
+        # hosts share a filesystem here, so what this proves is that the parent
+        # was accepted, not that it would be between two machines.
+        self.assertTrue(any(f"with parent {first}" in m for m in captured.output))
+        self.assertFalse(any("receiving it whole" in m for m in captured.output))
+        self.app.post("/VolumeDriver.Snapshot.Restore", json.dumps({"Name": second}))
+        with open(join(VOLUMES_PATH, name, "foobar")) as f:
+            self.assertEqual(f.read(), "changed foobar")
+
+    @unittest.skipIf(
+        os.environ.get("BUTTERVOLUME_LOCAL_TEST"), "SSH not available in local test mode"
+    )
+    def test_a_received_snapshot_is_not_sent_back_to_the_host_it_came_from(self):
+        """Receiving leaves the same trace as sending, and says the same thing"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        snapshot = jsonloads(
+            self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body
+        )["Snapshot"]
+        self.app.post(
+            "/VolumeDriver.Snapshot.Send",
+            json.dumps({"Name": snapshot, "Host": "localhost", "Test": True}),
+        )
+        # this host forgets everything, the way another machine would never
+        # have known it
+        for leftover in [s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")]:
+            btrfs.Subvolume(join(SNAPSHOTS_PATH, leftover)).delete()
+
+        self.app.post(
+            "/VolumeDriver.Snapshot.Receive",
+            json.dumps({"Name": name, "Host": "localhost", "Test": True}),
+        )
+        with patch("buttervolume.plugin.run_btrfs_send_receive") as transfer:
+            resp = jsonloads(
+                self.app.post(
+                    "/VolumeDriver.Snapshot.Send",
+                    json.dumps({"Name": snapshot, "Host": "localhost", "Test": True}),
+                ).body
+            )
+        self.assertEqual(resp, {"Err": ""})
+        transfer.assert_not_called()
+
     def test_snapshot(self):
         """Check we can snapshot a volume"""
         # create a volume with a file
