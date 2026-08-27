@@ -86,11 +86,14 @@ def run_job(job, name, test=False):
 @run_job.register
 def run_snapshot(job: Snapshot, name, test=False):
     log.info("Starting scheduled snapshot of %s", name)
-    snap = api.snapshot(name, test=test)
+    snap, created = api.snapshot(name, test=test)
     if not snap:
         log.info("Could not snapshot %s", name)
         return False
-    log.info("Successfully snapshotted to %s", snap)
+    if created:
+        log.info("Successfully snapshotted to %s", snap)
+    else:
+        log.info("%s has not changed since %s, no new snapshot", name, snap)
     return True
 
 
@@ -101,23 +104,26 @@ def run_replicate(job: Replicate, name, test=False):
         return False
     log.info("Starting scheduled replication of %s", name)
     snap = None
+    created = False
     try:
         ReplicationInProgress.add(name)
-        snap = api.snapshot(name, test=test)
+        snap, created = api.snapshot(name, test=test)
         if not snap:
             log.info("Could not snapshot %s", name)
             return False
-        log.info("Successfully snapshotted to %s", snap)
+        log.info("Replicating %s", snap)
         if not api.send(snap, job.host, test=test):
-            # the same road as an exception: the error is already logged,
-            # and the snapshot taken for this replication has no reason to stay
+            # the same road as an exception: the error is already logged, and
+            # a snapshot taken for this replication has no reason to stay
             raise ReplicationError(f"Could not send {snap} to {job.host}")
         log.info("Successfully replicated %s to %s", name, snap)
         return True
     except Exception as e:
         log.warning("Replication failed: %s", e)
-        # remove snapshot that was created for the failed replication
-        if snap:
+        # remove the snapshot this round created for the replication, and
+        # only that one: an unchanged volume gives back the snapshot of an
+        # earlier round, which a failure here is no reason to delete
+        if snap and created:
             if api.remove(snap, test=test):
                 log.info("Removed snapshot %s for failed replication", snap)
             else:
@@ -158,14 +164,15 @@ def run_synchronize(job: Synchronize, name, test=False):
     log.info("Starting scheduled synchronization of %s", name)
     hosts = list(job.hosts)
     # do a snapshot to save state before pulling data
-    snap = api.snapshot(name, test=test)
+    snap, _ = api.snapshot(name, test=test)
     if not snap:
         log.info("Could not snapshot %s", name)
         return False
     # said out loud, like the two other jobs that take one: this is the
     # snapshot a pull stopped halfway is recovered from, and an administrator
-    # who has to go back to it needs to read its name somewhere
-    log.info("Successfully snapshotted to %s", snap)
+    # who has to go back to it needs to read its name somewhere. It can be the
+    # one an earlier round took, when nothing was written since
+    log.info("%s can be recovered from the snapshot %s", name, snap)
     if api.sync([name], hosts, test=test):
         log.debug("End of %s synchronization from %s", name, hosts)
     else:

@@ -113,8 +113,18 @@ def _get(urlpath):
 
 
 def snapshot(name, test=False):
-    """Snapshot a volume, and answer the name of the snapshot."""
-    return get_from(_post("/VolumeDriver.Snapshot", {"Name": name}, test), "Snapshot")
+    """Snapshot a volume, and answer its name and whether this call took it.
+
+    A volume nobody wrote to is not snapshotted again, so the name can be that
+    of a snapshot an earlier round took: a caller that deletes what it created
+    has to know which of the two it is holding. A call that failed answers
+    False twice, and has already said why.
+    """
+    resp = _post("/VolumeDriver.Snapshot", {"Name": name}, test)
+    snap = get_from(resp, "Snapshot")
+    # read a second time only once the first read said the answer carries no
+    # error, otherwise the error would be logged twice
+    return snap, bool(snap) and get_from(resp, "Created")
 
 
 def snapshots(name):

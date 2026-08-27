@@ -441,6 +441,11 @@ The volumes are currently expected to live in ``/var/lib/buttervolume/volumes`` 
 the snapshot will be created in ``/var/lib/buttervolume/snapshots``, by appending the
 datetime to the name of the volume, separated with ``@``.
 
+A volume nobody wrote to since its last snapshot is not snapshotted again: the
+command prints the name of the existing snapshot, which is the one holding the
+state of the volume. So a snapshot scheduled every minute on a volume at rest
+costs one subvolume, not one per minute.
+
 
 List the snapshots
 ------------------
@@ -525,6 +530,11 @@ each send, named ``<volume>@<datetime>@<host>``, and nothing is asked of the
 remote host. So a snapshot whose trace is there is not sent a second time, and
 a copy deleted on the remote host behind Buttervolume's back goes unnoticed:
 delete the trace as well, and the next send carries the whole volume again.
+
+A replication scheduled on a volume at rest therefore costs nothing at all: the
+snapshot it would take is not taken, its trace says the remote host already has
+it, and nothing crosses the network. Replicating the same volume to two hosts
+every minute is a reasonable thing to schedule.
 
 
 ``<host>`` is the hostname or IP address of the remote host. The snapshot is

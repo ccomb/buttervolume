@@ -49,6 +49,7 @@ from buttervolume.config import (
 from buttervolume.names import (
     Snapshot,
     new_snapshot,
+    parsed,
     sent_snapshots,
     snapshots_of,
     validate_hostname,
@@ -435,13 +436,46 @@ def snapshot_send(req):
 
 @route("/VolumeDriver.Snapshot")
 def volume_snapshot(req):
-    """snapshot a volume in the SNAPSHOTS dir"""
+    """Snapshot a volume in the SNAPSHOTS dir, unless it holds nothing new.
+
+    The answer names the snapshot that holds the state of the volume, and says
+    in "Created" whether this call is the one that took it. A volume nobody
+    wrote to gives the name of the previous snapshot and takes none, which is
+    what keeps a replication scheduled every minute from filling the disk with
+    identical copies. A caller that deletes what it created has to read that
+    flag: the name alone no longer says whose snapshot it is.
+    """
     name = req["Name"]
     volume = existing_volume(name)
 
     timestamped = new_snapshot_name(name)
-    volume.snapshot(snapshotpath(timestamped), readonly=True)
-    return {"Err": "", "Snapshot": timestamped}
+    path = snapshotpath(timestamped)
+    volume.snapshot(path, readonly=True)
+
+    # BTRFS cannot compare a live volume to a snapshot, since a send needs a
+    # readonly subvolume, so the comparison happens after the fact: the copy
+    # just taken is deleted when it holds nothing the previous one does not.
+    # The traces of the sends are left out: their content is that of their own
+    # snapshot, but naming one here would have the next send refuse it.
+    previous = max(
+        (
+            s
+            for s in parsed(os.listdir(SNAPSHOTS_PATH))
+            if s.volume == name and not s.host and str(s) != timestamped
+        ),
+        key=str,
+        default=None,
+    )
+    if previous:
+        try:
+            if btrfs.Subvolume(path).is_same_as(snapshotpath(str(previous))):
+                btrfs.Subvolume(path).delete()
+                log.info("%s has not changed since %s", name, previous)
+                return {"Err": "", "Snapshot": str(previous), "Created": False}
+        except BtrfsError as e:
+            # a comparison we could not make is no reason to lose a snapshot
+            log.warning("Could not tell whether %s changed since %s: %s", name, previous, e)
+    return {"Err": "", "Snapshot": timestamped, "Created": True}
 
 
 @route("/VolumeDriver.Snapshot.List", "GET")
