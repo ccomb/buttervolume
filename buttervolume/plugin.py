@@ -38,6 +38,7 @@ from buttervolume import (
 from buttervolume.btrfs import BtrfsError
 from buttervolume.config import (
     DTFORMAT,
+    REMOTE_TIMEOUT,
     RSYNC_TIMEOUT,
     SCHEDULE,
     SCHEDULE_DISABLED,
@@ -204,6 +205,46 @@ def run_btrfs_send_receive(
             )
 
     return receive_stdout.decode()
+
+
+def snapshots_on_remote(remote_host, remote_path, port):
+    """The names this host keeps in that directory.
+
+    An empty answer means it answered and keeps nothing there. A host that
+    could not answer raises instead, and is never read as a host with nothing:
+    acting on "there is nothing over there" when nobody said so is how the
+    good copy of a volume gets replaced by an older one.
+
+    The whole directory is listed rather than a `volume@*` pattern. The
+    pattern would carry a name into a shell on the other machine, and `ls`
+    leaves with the same non-zero status when nothing matches as when it
+    failed, which is exactly the difference this function exists to keep.
+    """
+    validate_hostname(remote_host)
+    ssh_cmd = [
+        "ssh",
+        "-p",
+        port,
+        "-o",
+        "StrictHostKeyChecking=no",
+        remote_host,
+        f"ls -1 {remote_path}",
+    ]
+    try:
+        listing = subprocess.run(ssh_cmd, capture_output=True, timeout=REMOTE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise ReplicationTimeoutError(
+            f"{remote_host} did not say what it keeps within {REMOTE_TIMEOUT}s"
+        ) from None
+    if listing.returncode != 0:
+        raise ReplicationError(
+            f"Could not read the snapshots of {remote_host}: "
+            f"{listing.stderr.decode(errors='replace')}"
+        )
+    # nothing is decoded strictly: a name we cannot read is one this host
+    # should not have written, and it is refused later by name rather than
+    # here by an error nobody expected
+    return listing.stdout.decode(errors="replace").splitlines()
 
 
 @route("/Plugin.Activate")

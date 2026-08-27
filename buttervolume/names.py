@@ -173,3 +173,38 @@ def sent_snapshots(volume, host, names):
         (s for s in parsed(names) if s.volume == volume and s.host == host),
         key=str,
     )
+
+
+def _taken_snapshots(volume, names):
+    """The snapshots taken of this volume among these names, the traces left out.
+
+    A trace of a send is named after the snapshot it was made from, plus the
+    target, so `www@2026-08-26T10:00:00.000000@node3` sorts after the snapshot
+    itself and would pass for the most recent one.
+
+    Every name of this volume is read, and one that cannot be read raises
+    rather than being dropped. These names come from a listing, and a listing
+    we could not read must never be answered as a volume with no snapshot.
+    """
+    return [s for s in map(Snapshot.parse, snapshots_of(volume, names)) if not s.host]
+
+
+def snapshot_to_fetch(volume, remote_names, local_names):
+    """What to ask that host for, and the parent both sides already hold.
+
+    The pair `(snapshot, parent)`, or None when the host holds no snapshot of
+    this volume. The parent is the most recent older snapshot the two sides
+    have in common, which is what an incremental transfer is built on; None
+    when they have none, and then the whole volume has to come over.
+
+    The parent is read from the two listings rather than from the trace of a
+    send, which says what we once sent there. The question here is what that
+    host has now, and it has just been asked.
+    """
+    remote = _taken_snapshots(volume, remote_names)
+    if not remote:
+        return None
+    local = {str(s) for s in _taken_snapshots(volume, local_names)}
+    # never the one being fetched, which cannot be its own parent
+    common = [s for s in remote[:-1] if str(s) in local]
+    return remote[-1], (common[-1] if common else None)

@@ -60,11 +60,15 @@ if not os.path.exists(USOCKET):
             continue  # Try next driver name
 
 TIMER = int(getconfig(config, "TIMER", 60))
-# How long each external command may legitimately take, in seconds. These two
+# How long each external command may legitimately take, in seconds. These three
 # are not read from the configuration file, but they are delays like the next
 # one and are read next to it.
 SYNC_TIMEOUT = 30
 RSYNC_TIMEOUT = 600
+# How long a remote host has to answer a question that is not a transfer, such
+# as saying which snapshots it keeps. Not SEND_TIMEOUT: waiting ten minutes for
+# a listing would hold up whoever asked for it just as long.
+REMOTE_TIMEOUT = 30
 # The send crosses the network, so its limit is configurable like the rest
 SEND_TIMEOUT = int(getconfig(config, "SEND_TIMEOUT", 600))
 DTFORMAT = getconfig(config, "DTFORMAT", "%Y-%m-%dT%H:%M:%S.%f")

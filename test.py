@@ -40,6 +40,7 @@ from buttervolume.names import (
     Snapshot,
     new_snapshot,
     sent_snapshots,
+    snapshot_to_fetch,
     snapshots_of,
 )
 from buttervolume.purge import Pattern, compute_purges
@@ -1699,6 +1700,43 @@ class TestNames(unittest.TestCase):
         self.assertEqual(str(already_sent[-1].without_host()), "www@t2")
         # and the trace this send will leave behind
         self.assertEqual(str(Snapshot.parse("www@t3").sent_to("node2")), "www@t3@node2")
+
+
+class TestWhatToFetch(unittest.TestCase):
+    """What to ask a host for, read from two listings and nothing else"""
+
+    def test_the_most_recent_snapshot_over_there_is_the_one_to_fetch(self):
+        remote = ["www@t1", "www@t2", "www@t3", "other@t9"]
+        local = ["www@t1", "www@t2"]
+        snapshot, parent = snapshot_to_fetch("www", remote, local)
+        self.assertEqual(str(snapshot), "www@t3")
+        # the most recent one both sides already hold, which is what an
+        # incremental transfer is built on
+        self.assertEqual(str(parent), "www@t2")
+
+    def test_a_trace_is_neither_fetched_nor_taken_for_a_parent(self):
+        # that host keeps the traces of its own sends next to its snapshots,
+        # and www@t3@node3 sorts after www@t3
+        remote = ["www@t1", "www@t2", "www@t2@node3"]
+        local = ["www@t1", "www@t1@node3"]
+        snapshot, parent = snapshot_to_fetch("www", remote, local)
+        self.assertEqual(str(snapshot), "www@t2")
+        self.assertEqual(str(parent), "www@t1")
+
+    def test_two_sides_with_nothing_in_common_have_no_parent(self):
+        snapshot, parent = snapshot_to_fetch("www", ["www@t2"], ["www@t1"])
+        self.assertEqual(str(snapshot), "www@t2")
+        # the whole volume has to come over
+        self.assertIsNone(parent)
+
+    def test_a_host_that_keeps_nothing_of_this_volume_asks_for_nothing(self):
+        self.assertIsNone(snapshot_to_fetch("www", ["other@t1", "wwwbis@t1"], ["www@t1"]))
+
+    def test_a_name_of_this_volume_that_nobody_can_read_stops_everything(self):
+        # leaving it out would answer "that host keeps nothing", which is
+        # exactly the wrong answer to a listing we could not read
+        with self.assertRaises(ValidationError):
+            snapshot_to_fetch("www", ["www@t1", "www@t 2"], [])
 
 
 class TestPurgePattern(unittest.TestCase):
