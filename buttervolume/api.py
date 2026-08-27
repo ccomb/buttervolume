@@ -30,13 +30,17 @@ from bottle import app
 from requests.exceptions import ConnectionError
 from webtest import TestApp
 
-from buttervolume.plugin import USOCKET
+import buttervolume.plugin  # noqa: F401  this import is what posts the routes
+from buttervolume.config import USOCKET
 
 log = logging.getLogger()
 
 # The Bottle application the plugin has posted its routes on. Importing
-# plugin.py is what puts them there, hence the import above, which also gives
-# us the socket they answer on.
+# plugin.py is what puts them there, and nothing else in the daemon imports it:
+# without the line above, `buttervolume run` serves an application without a
+# single route, and says nothing. The test suite cannot see that, because it
+# imports plugin.py on its own, which is why one test starts a fresh
+# interpreter to check it.
 app = app()
 
 

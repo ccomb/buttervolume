@@ -5,14 +5,13 @@ decorators is the authoritative route list. ``@route`` is defined here too, and
 is not Bottle's: it decodes the request, logs it, and turns any failure into
 the ``Err`` field of a 200 answer, which is the only shape a client can read.
 
-This is also where the directories are configured, so this is where a name
-turns into a path on disk, and where it is validated as it does. What a name is
+This is where a name turns into a path on disk, and where it is validated as it
+does; the directories it is joined to come from ``config.py``. What a name is
 worth is decided in ``names.py``, what a retention pattern says in ``purge.py``,
 what a scheduled action asks for in ``schedule.py``; none of them knows these
 directories, and the schedule file is read and written there rather than here.
 """
 
-import configparser
 import json
 import logging
 import os
@@ -23,7 +22,6 @@ from dataclasses import replace
 from datetime import datetime
 from functools import wraps
 from os.path import basename, dirname, join
-from subprocess import run
 
 from bottle import request
 from bottle import route as bottle_route
@@ -37,6 +35,17 @@ from buttervolume import (
     btrfs,
 )
 from buttervolume.btrfs import BtrfsError
+from buttervolume.config import (
+    DTFORMAT,
+    RSYNC_TIMEOUT,
+    SCHEDULE,
+    SCHEDULE_DISABLED,
+    SEND_TIMEOUT,
+    SNAPSHOTS_PATH,
+    SYNC_TIMEOUT,
+    TEST_REMOTE_PATH,
+    VOLUMES_PATH,
+)
 from buttervolume.names import (
     Snapshot,
     new_snapshot,
@@ -49,58 +58,6 @@ from buttervolume.names import (
 from buttervolume.purge import Pattern, compute_purges
 from buttervolume.schedule import Entry, Job, read_schedule, write_schedule
 
-config = configparser.ConfigParser()
-config.read("/etc/buttervolume/config.ini")
-
-
-def getconfig(config, var, default):
-    """read the var from the environ, then config file, then default"""
-    return os.environ.get("BUTTERVOLUME_" + var) or config["DEFAULT"].get(var, default)
-
-
-# overrideable defaults with config file
-VOLUMES_PATH = getconfig(config, "VOLUMES_PATH", "/var/lib/buttervolume/volumes/")
-SNAPSHOTS_PATH = getconfig(config, "SNAPSHOTS_PATH", "/var/lib/buttervolume/snapshots/")
-TEST_REMOTE_PATH = getconfig(config, "TEST_REMOTE_PATH", "/var/lib/buttervolume/received/")
-SCHEDULE = getconfig(config, "SCHEDULE", "/etc/buttervolume/schedule.csv")
-SCHEDULE_DISABLED = f"{SCHEDULE}.disabled"
-LAST_RUNS = getconfig(config, "LAST_RUNS", "/var/lib/buttervolume/lastruns.csv")
-# Support both old and new plugin names for backward compatibility
-DRIVERNAME = getconfig(config, "DRIVERNAME", "ccomb/buttervolume:latest")
-LEGACY_DRIVERNAME = "anybox/buttervolume:latest"
-RUNPATH = getconfig(config, "RUNPATH", "/run/docker")
-SOCKET = getconfig(config, "SOCKET", os.path.join(RUNPATH, "plugins", "btrfs.sock"))
-USOCKET = SOCKET
-if not os.path.exists(USOCKET):
-    # socket path on the host or another container
-    # Try current plugin name first, then legacy name for backward compatibility
-    for driver_name in [DRIVERNAME, LEGACY_DRIVERNAME]:
-        try:
-            plugins = json.loads(
-                run(
-                    f"docker plugin inspect {driver_name}",
-                    shell=True,
-                    capture_output=True,
-                ).stdout.decode()
-                or "[]"
-            )
-            if plugins:
-                plugin = plugins[0]  # can we have several plugins with the same name?
-                USOCKET = os.path.join(RUNPATH, "plugins", plugin["Id"], "btrfs.sock")
-                break
-        except Exception:
-            continue  # Try next driver name
-
-TIMER = int(getconfig(config, "TIMER", 60))
-# How long each external command may legitimately take, in seconds
-SYNC_TIMEOUT = 30
-RSYNC_TIMEOUT = 600
-# The send crosses the network, so its limit is configurable like the rest
-SEND_TIMEOUT = int(getconfig(config, "SEND_TIMEOUT", 600))
-DTFORMAT = getconfig(config, "DTFORMAT", "%Y-%m-%dT%H:%M:%S.%f")
-LOGLEVEL = getattr(logging, getconfig(config, "LOGLEVEL", "INFO"))
-
-logging.basicConfig(level=LOGLEVEL)
 log = logging.getLogger()
 
 
