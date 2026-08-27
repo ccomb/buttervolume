@@ -17,6 +17,7 @@ import logging
 import os
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import replace
 from datetime import datetime
@@ -434,6 +435,16 @@ def snapshot_send(req):
     return {"Err": ""}
 
 
+# One snapshot at a time. The endpoint below takes a copy, compares it with the
+# previous snapshot and deletes it when the two hold the same thing. Two calls
+# on the same volume, interleaved, would each compare against the copy of the
+# other, find it identical, and delete their own: the volume would come out of
+# the two calls with neither, while both answers named one. A single lock for
+# every volume is enough, since the scheduler runs its jobs one after the other
+# and the only other snapshot is the one somebody asks for.
+snapshotting = threading.Lock()
+
+
 @route("/VolumeDriver.Snapshot")
 def volume_snapshot(req):
     """Snapshot a volume in the SNAPSHOTS dir, unless it holds nothing new.
@@ -448,41 +459,43 @@ def volume_snapshot(req):
     name = req["Name"]
     volume = existing_volume(name)
 
-    timestamped = new_snapshot_name(name)
-    path = snapshotpath(timestamped)
-    volume.snapshot(path, readonly=True)
+    with snapshotting:
+        timestamped = new_snapshot_name(name)
+        path = snapshotpath(timestamped)
+        volume.snapshot(path, readonly=True)
 
-    # BTRFS cannot compare a live volume to a snapshot, since a send needs a
-    # readonly subvolume, so the comparison happens after the fact: the copy
-    # just taken is deleted when it holds nothing the previous one does not.
-    # The traces of the sends are left out: their content is that of their own
-    # snapshot, but naming one here would have the next send refuse it.
-    previous = max(
-        (
-            s
-            for s in parsed(os.listdir(SNAPSHOTS_PATH))
-            if s.volume == name and not s.host and str(s) != timestamped
-        ),
-        key=str,
-        default=None,
-    )
-    if previous:
-        try:
-            if btrfs.Subvolume(path).is_same_as(snapshotpath(str(previous))):
-                btrfs.Subvolume(path).delete()
-                log.info("%s has not changed since %s", name, previous)
-                return {"Err": "", "Snapshot": str(previous), "Created": False}
-        except BtrfsError as e:
-            # neither a comparison we could not make nor a deletion that failed
-            # is a reason to lose a snapshot: the copy is kept, and answered as
-            # the one this call took
-            log.warning(
-                "Keeping %s, which could not be compared with %s or dropped: %s",
-                timestamped,
-                previous,
-                e,
-            )
-    return {"Err": "", "Snapshot": timestamped, "Created": True}
+        # BTRFS cannot compare a live volume to a snapshot, since a send needs
+        # a readonly subvolume, so the comparison happens after the fact: the
+        # copy just taken is deleted when it holds nothing the previous one
+        # does not. The traces of the sends are left out: their content is that
+        # of their own snapshot, but naming one here would have the next send
+        # refuse it.
+        previous = max(
+            (
+                s
+                for s in parsed(os.listdir(SNAPSHOTS_PATH))
+                if s.volume == name and not s.host and str(s) != timestamped
+            ),
+            key=str,
+            default=None,
+        )
+        if previous:
+            try:
+                if btrfs.Subvolume(path).is_same_as(snapshotpath(str(previous))):
+                    btrfs.Subvolume(path).delete()
+                    log.info("%s has not changed since %s", name, previous)
+                    return {"Err": "", "Snapshot": str(previous), "Created": False}
+            except BtrfsError as e:
+                # neither a comparison we could not make nor a deletion that
+                # failed is a reason to lose a snapshot: the copy is kept, and
+                # answered as the one this call took
+                log.warning(
+                    "Keeping %s, which could not be compared with %s or dropped: %s",
+                    timestamped,
+                    previous,
+                    e,
+                )
+        return {"Err": "", "Snapshot": timestamped, "Created": True}
 
 
 @route("/VolumeDriver.Snapshot.List", "GET")

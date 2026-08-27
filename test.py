@@ -617,6 +617,32 @@ class TestCase(unittest.TestCase):
         volume.snapshot(after, readonly=True)
         self.assertFalse(btrfs.Subvolume(after).is_same_as(before))
 
+    def test_two_snapshots_of_the_same_volume_at_once_leave_one(self):
+        """Each call deletes the copy it took, never the copy of the other one"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        answers = []
+
+        def take_one():
+            resp = self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name}))
+            answers.append(jsonloads(resp.body))
+
+        threads = [threading.Thread(target=take_one) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        # a volume nobody wrote to comes out of the two calls with a single
+        # snapshot, and neither answer names one that is no longer there
+        self.assertEqual(len(answers), 2)
+        for answer in answers:
+            self.assertEqual(answer["Err"], "")
+            self.assertTrue(os.path.exists(join(SNAPSHOTS_PATH, answer["Snapshot"])))
+        self.assertEqual(
+            len([s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")]), 1
+        )
+
     def test_an_unchanged_volume_is_not_snapshotted_again(self):
         """The answer names the snapshot that holds the state, and says who took it"""
         name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
