@@ -12,6 +12,15 @@ CHANGELOG
   avoid. The pair is now kept whatever the pattern says, and the README says
   that a host you stop replicating to leaves a pair to delete by hand.
 
+- Sending a snapshot the remote host already holds no longer destroys the copy
+  it has. ``buttervolume send`` sends whatever snapshot it is named, and naming
+  the same one twice made it its own parent: the send succeeded, the remote
+  receive refused the result, and the fallback deleted the good remote copy
+  before sending the whole volume again. Between the deletion and the end of
+  that transfer the remote host held nothing. The trace of the previous send is
+  now what answers the question, and a snapshot that is already there is
+  refused with an empty error rather than sent.
+
 - Buttervolume now says it needs Python 3.11 or later. Nothing declared it, so
   each version of ``uv`` invented its own floor and rewrote ``uv.lock`` on the
   next command it was given, and an installation on an older Python failed on
