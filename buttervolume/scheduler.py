@@ -26,7 +26,7 @@ from os.path import exists
 from subprocess import CalledProcessError
 
 from buttervolume import ReplicationError, ValidationError, api
-from buttervolume.plugin import LAST_RUNS, SCHEDULE, TIMER
+from buttervolume.config import LAST_RUNS, SCHEDULE, TIMER
 from buttervolume.schedule import (
     Entry,
     Job,

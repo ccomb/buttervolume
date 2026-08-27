@@ -33,8 +33,7 @@ from waitress import serve
 
 from buttervolume import ValidationError, api
 from buttervolume.api import app
-from buttervolume.init import init_btrfs
-from buttervolume.plugin import (
+from buttervolume.config import (
     LOGLEVEL,
     SCHEDULE,
     SNAPSHOTS_PATH,
@@ -42,6 +41,7 @@ from buttervolume.plugin import (
     TIMER,
     VOLUMES_PATH,
 )
+from buttervolume.init import init_btrfs
 from buttervolume.purge import Pattern
 from buttervolume.schedule import Job, Purge, read_schedule, write_schedule
 from buttervolume.scheduler import scheduler

@@ -13,6 +13,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -28,18 +29,18 @@ from unittest.mock import MagicMock, patch
 from webtest import TestApp
 
 from buttervolume import ValidationError, btrfs, cli, plugin, schedule, scheduler
+from buttervolume.config import (
+    DTFORMAT,
+    SNAPSHOTS_PATH,
+    TEST_REMOTE_PATH,
+    VOLUMES_PATH,
+)
 from buttervolume.init import init_btrfs
 from buttervolume.names import (
     Snapshot,
     new_snapshot,
     sent_snapshots,
     snapshots_of,
-)
-from buttervolume.plugin import (
-    DTFORMAT,
-    SNAPSHOTS_PATH,
-    TEST_REMOTE_PATH,
-    VOLUMES_PATH,
 )
 from buttervolume.purge import Pattern, compute_purges
 from buttervolume.schedule import (
@@ -1393,6 +1394,30 @@ class TestCase(unittest.TestCase):
     def test_capabilities(self):
         rsp = jsonloads(self.app.post("/VolumeDriver.Capabilities", "{}").body)
         self.assertEqual(rsp.get("Capabilities", {}).get("Scope"), "local")
+
+
+class TestTheDaemonServesItsRoutes(unittest.TestCase):
+    """What `buttervolume run` would answer, asked from a fresh interpreter.
+
+    The routes are posted on the default Bottle application as a side effect of
+    importing plugin.py, and api.py is the only place in the daemon that
+    imports it. The rest of this file cannot see that import disappear, because
+    it imports plugin.py on its own, and the application would look full here
+    while the daemon served nothing. Hence a new interpreter, which imports
+    exactly what the daemon imports and nothing more.
+    """
+
+    def test_importing_the_api_is_enough_to_have_the_routes(self):
+        result = subprocess.run(
+            [sys.executable, "-c", "from buttervolume.api import app; assert app.routes"],
+            capture_output=True,
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            "the daemon would serve an application without a single route: "
+            + result.stderr.decode(),
+        )
 
 
 class TestNames(unittest.TestCase):
