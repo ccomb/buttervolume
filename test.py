@@ -1921,6 +1921,13 @@ class TestWhatToFetch(unittest.TestCase):
         with self.assertRaises(ValidationError):
             snapshot_to_fetch("www", ["www@t1", "www@t 2"], [])
 
+    def test_a_stray_file_of_our_own_stops_nothing(self):
+        # our own directory is not a listing we have to make sense of: whatever
+        # left that name behind, it is not one of the snapshots over there
+        snapshot, parent = snapshot_to_fetch("www", ["www@t1", "www@t2"], ["www@t1", "www@t 2"])
+        self.assertEqual(str(snapshot), "www@t2")
+        self.assertEqual(str(parent), "www@t1")
+
 
 class TestPurgePattern(unittest.TestCase):
     """The retention pattern, read without touching a filesystem"""

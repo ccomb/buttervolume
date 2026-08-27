@@ -183,8 +183,8 @@ def _taken_snapshots(volume, names):
     itself and would pass for the most recent one.
 
     Every name of this volume is read, and one that cannot be read raises
-    rather than being dropped. These names come from a listing, and a listing
-    we could not read must never be answered as a volume with no snapshot.
+    rather than being dropped. These names come from another machine, and a
+    listing we could not read must never be answered as a host with nothing.
     """
     return [s for s in map(Snapshot.parse, snapshots_of(volume, names)) if not s.host]
 
@@ -204,7 +204,12 @@ def snapshot_to_fetch(volume, remote_names, local_names):
     remote = _taken_snapshots(volume, remote_names)
     if not remote:
         return None
-    local = {str(s) for s in _taken_snapshots(volume, local_names)}
+    # what we hold is read as plain names, none of which has to make sense: a
+    # name saying the same thing as one over there is the same snapshot, and a
+    # name we could not have written says the same thing as none of them. So a
+    # stray file in our own directory stops nothing, the way it stops nothing
+    # anywhere else this directory is read.
+    held = set(local_names)
     # never the one being fetched, which cannot be its own parent
-    common = [s for s in remote[:-1] if str(s) in local]
+    common = [s for s in remote[:-1] if str(s) in held]
     return remote[-1], (common[-1] if common else None)
