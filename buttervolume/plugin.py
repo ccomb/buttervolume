@@ -355,6 +355,30 @@ def driver_cap(_):
     return {"Capabilities": {"Scope": "local"}}
 
 
+def keep_trace(snapshot, remote_host):
+    """Remember that this host holds this snapshot, and forget the older ones.
+
+    That trace is the whole memory of what is over there: a later send reads it
+    to know there is nothing to send, and an incremental one is built on the
+    snapshot it was made from. The traces of the previous exchanges with that
+    host go, since this one says the same thing about a more recent snapshot;
+    the snapshots they were made from stay, and a purge takes them when its
+    pattern says so.
+    """
+    trace = snapshot.sent_to(remote_host)
+    if not os.path.exists(snapshotpath(str(trace))):
+        btrfs.Subvolume(snapshotpath(str(snapshot))).snapshot(
+            snapshotpath(str(trace)), readonly=True
+        )
+    for old in sent_snapshots(snapshot.volume, remote_host, os.listdir(SNAPSHOTS_PATH)):
+        if old == trace:
+            continue
+        try:
+            btrfs.Subvolume(snapshotpath(str(old))).delete()
+        except Exception as e:
+            log.warning("Failed to delete old snapshot %s: %s", str(old), str(e))
+
+
 @route("/VolumeDriver.Snapshot.Send")
 def snapshot_send(req):
     """The last sent snapshot is remembered by adding a suffix with the target"""
@@ -420,17 +444,7 @@ def snapshot_send(req):
         # Send without parent
         run_btrfs_send_receive(snapshot_path, remote_host, remote_snapshots, None, port)
 
-    # Create local tracking snapshot
-    btrfs.Subvolume(snapshot_path).snapshot(
-        snapshotpath(str(snapshot.sent_to(remote_host))), readonly=True
-    )
-
-    # Clean up old tracking snapshots
-    for old_snapshot in already_sent:
-        try:
-            btrfs.Subvolume(snapshotpath(str(old_snapshot))).delete()
-        except Exception as e:
-            log.warning("Failed to delete old snapshot %s: %s", str(old_snapshot), str(e))
+    keep_trace(snapshot, remote_host)
 
     return {"Err": ""}
 
