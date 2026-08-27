@@ -600,6 +600,13 @@ Here are a few examples of retention patterns:
     refused, and which ``buttervolume scheduled --auto-convert-old-patterns``
     rewrites in the schedule.
 
+Whatever the pattern says, a purge never deletes what a replication needs: the
+trace of the last send to a host, named ``<volume>@<datetime>@<host>``, and the
+snapshot it was made from, which is the parent the next incremental send is
+built on. Deleting them would send the whole volume over the network again. So
+when you stop replicating a volume to a host, delete that pair by hand,
+otherwise it stays there for good.
+
 
 Schedule a job
 --------------
