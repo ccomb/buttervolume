@@ -2,9 +2,9 @@
 
 Every call goes through ``run_safe``: no shell, a timeout each caller states
 for itself, and any failure raised as a typed error rather than returned as
-something the caller cannot tell apart from a result. One path escapes it and
-needs the same care: ``run_btrfs_send_receive`` in ``plugin.py`` builds its own
-send and receive to pipe them over SSH.
+something the caller cannot tell apart from a result. Two paths escape it and
+need the same care, because they pipe a send into a receive: ``is_same_as``
+below, and ``run_btrfs_send_receive`` in ``plugin.py``, which sends over SSH.
 
 Nothing here knows what a volume is, which is why ``BtrfsError`` lives here
 rather than with the errors the API answers with.
@@ -12,7 +12,9 @@ rather than with the errors the API answers with.
 
 import contextlib
 import os
-from subprocess import CalledProcessError, TimeoutExpired
+import tempfile
+import time
+from subprocess import PIPE, CalledProcessError, Popen, TimeoutExpired
 from subprocess import run as _run
 
 # How long each command may legitimately take, in seconds
@@ -22,6 +24,7 @@ CREATE_TIMEOUT = 120
 DELETE_TIMEOUT = 300
 CHATTR_TIMEOUT = 10
 LABEL_TIMEOUT = 15
+COMPARE_TIMEOUT = 60
 
 
 class BtrfsError(Exception):
@@ -111,6 +114,67 @@ class Subvolume:
             cmd.append("-r")
         cmd.extend([self.path, target])
         return run_safe(cmd, timeout=SNAPSHOT_TIMEOUT, error=BtrfsSubvolumeError)
+
+    def is_same_as(self, other_path):
+        """Does this snapshot hold nothing the one at other_path does not?
+
+        Both are readonly subvolumes, which ``btrfs send`` requires, and
+        ``other_path`` is the parent: the difference is what this one adds to
+        it. An incremental stream carrying nothing but its ``snapshot``
+        header, a single line under ``receive --dump``, says nothing changed.
+        The lines are counted on the bytes and nothing is decoded: the dump
+        prints the value of an extended attribute exactly as it is, so a
+        volume holding a binary one would raise where it has to answer.
+
+        Neither command goes through ``run_safe``: the send is piped into the
+        dump, with the same four precautions as ``run_btrfs_send_receive``.
+        The whole dump is read into memory rather than line by line;
+        ``--no-data`` leaves the file contents out, but a volume where
+        millions of files changed would still produce as many lines, and
+        COMPARE_TIMEOUT is what bounds that. It also bounds the sync below,
+        which the send of a snapshot just taken needs to see committed.
+        """
+        run_safe(["btrfs", "filesystem", "sync", self.path], timeout=COMPARE_TIMEOUT)
+        send_cmd = ["btrfs", "send", "--no-data", "-p", other_path, self.path]
+        # the send stderr goes to a temporary file rather than a pipe: nobody
+        # can read that pipe while waiting for the dump side, and a verbose
+        # failure would fill it and deadlock both processes
+        with tempfile.TemporaryFile() as send_stderr_file:
+            send_proc = Popen(send_cmd, stdout=PIPE, stderr=send_stderr_file)
+            dump_proc = Popen(
+                ["btrfs", "receive", "--dump"], stdin=send_proc.stdout, stdout=PIPE, stderr=PIPE
+            )
+            send_proc.stdout.close()  # so the send gets a SIGPIPE if the dump exits
+
+            # one deadline for the two waits, so the comparison really is
+            # bounded by COMPARE_TIMEOUT and not by twice that
+            deadline = time.monotonic() + COMPARE_TIMEOUT
+            try:
+                dump, dump_stderr = dump_proc.communicate(timeout=COMPARE_TIMEOUT)
+                send_proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except TimeoutExpired:
+                # killed, then reaped: a daemon that lives for months has no
+                # right to leave zombies behind
+                send_proc.kill()
+                dump_proc.kill()
+                send_proc.wait()
+                dump_proc.wait()
+                send_stderr_file.seek(0)
+                raise BtrfsError(
+                    f"Comparing {self.path} to {other_path} timed out after "
+                    f"{COMPARE_TIMEOUT}s: {send_stderr_file.read().decode(errors='replace')}"
+                ) from None
+
+            if send_proc.returncode != 0 or dump_proc.returncode != 0:
+                send_stderr_file.seek(0)
+                raise BtrfsError(
+                    f"Could not compare {self.path} to {other_path} "
+                    f"(send: {send_proc.returncode}, dump: {dump_proc.returncode}): "
+                    f"{send_stderr_file.read().decode(errors='replace')} "
+                    f"{dump_stderr.decode(errors='replace')}"
+                )
+
+        return len(dump.splitlines()) == 1
 
     def create(self, cow=False):
         """Create a new BTRFS subvolume"""

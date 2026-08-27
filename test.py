@@ -346,6 +346,11 @@ class TestCase(unittest.TestCase):
         with open(join(path, "foobar"), "w") as f:
             f.write("foobar")
 
+    def write_a_byte(self, name):
+        """Make the volume differ from its latest snapshot, and nothing more"""
+        with open(join(VOLUMES_PATH, name, "foobar"), "a") as f:
+            f.write(".")
+
     def test(self):
         """first basic scenario"""
         resp = jsonloads(self.app.post("/VolumeDriver.List", "{}").body)
@@ -585,6 +590,162 @@ class TestCase(unittest.TestCase):
         with open(join(path, "foobar")) as x, open(join(snapshot, "foobar")) as y:
             self.assertEqual(x.read(), y.read())
 
+    def test_a_snapshot_says_whether_the_volume_changed_since_another_one(self):
+        """What is compared is two readonly subvolumes, never the live volume"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        volume = btrfs.Subvolume(join(VOLUMES_PATH, name))
+        paths = [join(SNAPSHOTS_PATH, f"{name}@2026-01-0{i}T00:00:00.000000") for i in range(1, 4)]
+        volume.snapshot(paths[0], readonly=True)
+        volume.snapshot(paths[1], readonly=True)
+        self.assertTrue(btrfs.Subvolume(paths[1]).is_same_as(paths[0]))
+
+        self.write_a_byte(name)
+        volume.snapshot(paths[2], readonly=True)
+        self.assertFalse(btrfs.Subvolume(paths[2]).is_same_as(paths[1]))
+
+    def test_an_extended_attribute_nobody_can_read_as_text_is_still_compared(self):
+        """receive --dump writes the value of an attribute exactly as it is"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        volume = btrfs.Subvolume(join(VOLUMES_PATH, name))
+        before = join(SNAPSHOTS_PATH, f"{name}@2026-02-01T00:00:00.000000")
+        after = join(SNAPSHOTS_PATH, f"{name}@2026-02-02T00:00:00.000000")
+        volume.snapshot(before, readonly=True)
+        # the kind of thing a file server writes next to a file it stores
+        os.setxattr(join(VOLUMES_PATH, name, "foobar"), "user.binary", b"\xff\xfe\x00")
+        volume.snapshot(after, readonly=True)
+        self.assertFalse(btrfs.Subvolume(after).is_same_as(before))
+
+    def test_two_snapshots_of_the_same_volume_at_once_leave_one(self):
+        """Each call deletes the copy it took, never the copy of the other one"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        answers = []
+
+        def take_one():
+            resp = self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name}))
+            answers.append(jsonloads(resp.body))
+
+        threads = [threading.Thread(target=take_one) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        # a volume nobody wrote to comes out of the two calls with a single
+        # snapshot, and neither answer names one that is no longer there
+        self.assertEqual(len(answers), 2)
+        for answer in answers:
+            self.assertEqual(answer["Err"], "")
+            self.assertTrue(os.path.exists(join(SNAPSHOTS_PATH, answer["Snapshot"])))
+        self.assertEqual(
+            len([s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")]), 1
+        )
+
+    def test_an_unchanged_volume_is_not_snapshotted_again(self):
+        """The answer names the snapshot that holds the state, and says who took it"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        first = jsonloads(self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body)
+        second = jsonloads(self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body)
+        self.assertTrue(first["Created"])
+        self.assertEqual(second["Snapshot"], first["Snapshot"])
+        self.assertFalse(second["Created"])
+        # and the copy taken for the comparison is gone from the disk
+        self.assertEqual(
+            [s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")],
+            [first["Snapshot"]],
+        )
+
+    def test_a_volume_written_to_is_snapshotted_again(self):
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        first = jsonloads(self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body)
+        self.write_a_byte(name)
+        second = jsonloads(self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body)
+        self.assertTrue(second["Created"])
+        self.assertNotEqual(second["Snapshot"], first["Snapshot"])
+        self.assertEqual(
+            len([s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")]), 2
+        )
+
+    def test_the_snapshot_of_an_unchanged_volume_still_restores(self):
+        """The name given back is a snapshot, not a bookkeeping entry"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        path = join(VOLUMES_PATH, name)
+        self.create_a_volume_with_a_file(name)
+        self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name}))
+        again = jsonloads(self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body)
+        with open(join(path, "foobar"), "w") as f:
+            f.write("modified foobar")
+
+        resp = jsonloads(
+            self.app.post(
+                "/VolumeDriver.Snapshot.Restore", json.dumps({"Name": again["Snapshot"]})
+            ).body
+        )
+        self.assertEqual(resp["Err"], "")
+        with open(join(path, "foobar")) as f:
+            self.assertEqual(f.read(), "foobar")
+
+    def test_a_failed_replication_keeps_a_snapshot_it_did_not_create(self):
+        """Only the snapshot of this round goes, and an unchanged volume gave none"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        existing = jsonloads(
+            self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body
+        )["Snapshot"]
+        self.app.post(
+            "/VolumeDriver.Schedule",
+            json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 1}),
+        )
+        with patch("buttervolume.api.send") as mock_send:
+            mock_send.side_effect = Exception("replication failed")
+            runjobs(SCHEDULE, True, last_runs=LAST_RUNS)
+        mock_send.assert_called_once()
+        self.assertEqual(
+            [s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")], [existing]
+        )
+        # unschedule
+        self.app.post(
+            "/VolumeDriver.Schedule",
+            json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 0}),
+        )
+
+    @unittest.skipIf(
+        os.environ.get("BUTTERVOLUME_LOCAL_TEST"), "SSH not available in local test mode"
+    )
+    def test_replicating_a_volume_at_rest_twice_transfers_nothing_the_second_time(self):
+        """Two rounds on a volume nobody wrote to leave one snapshot and one copy"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        with open(SCHEDULE, "w") as f:
+            f.write(f"{name},replicate:localhost,60,True\n")
+        for _ in range(2):
+            write_last_runs(
+                LAST_RUNS,
+                {"replicate:localhost": {name: datetime.now() - timedelta(days=1)}},
+            )
+            runjobs(config=SCHEDULE, test=True, last_runs=LAST_RUNS)
+
+        # the second round reported a success, so its date was written down
+        last = read_last_runs(LAST_RUNS)["replicate:localhost"][name]
+        self.assertGreater(last, datetime.now() - timedelta(minutes=1))
+        # one snapshot and its trace, and a single copy on the other side
+        self.assertEqual(
+            len([s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")]), 2
+        )
+        remote = [s for s in os.listdir(TEST_REMOTE_PATH) if s.startswith(name + "@")]
+        self.assertEqual(len(remote), 1)
+
+        # restored, because counting the copies proves nothing: one destroyed
+        # and sent again counts exactly like one left alone
+        target = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        btrfs.Subvolume(join(TEST_REMOTE_PATH, remote[0])).snapshot(join(VOLUMES_PATH, target))
+        with open(join(VOLUMES_PATH, target, "foobar")) as f:
+            self.assertEqual(f.read(), "foobar")
+
     def test_snapshots(self):
         """Check we can list snapshots"""
         # create two volumes with a file
@@ -592,13 +753,16 @@ class TestCase(unittest.TestCase):
         self.create_a_volume_with_a_file(name)
         name2 = PREFIX_TEST_VOLUME + uuid.uuid4().hex
         self.create_a_volume_with_a_file(name2)
-        # snapshot each volume twice
+        # snapshot each volume twice, writing in between so that the second
+        # snapshot is really taken: an unchanged volume gives back the first
         resp = self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name}))
         snap1 = json.loads(resp.body.decode())["Snapshot"]
+        self.write_a_byte(name)
         resp = self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name}))
         snap2 = json.loads(resp.body.decode())["Snapshot"]
         resp = self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name2}))
         snap3 = json.loads(resp.body.decode())["Snapshot"]
+        self.write_a_byte(name2)
         resp = self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name2}))
         snap4 = json.loads(resp.body.decode())["Snapshot"]
         # list all the snapshots
@@ -665,6 +829,9 @@ class TestCase(unittest.TestCase):
         self.assertEqual(len(schedule), 1)
         # simulate the last snapshot is 1 day in the past
         write_last_runs(LAST_RUNS, {"snapshot": {name2: datetime.now() - timedelta(days=1)}})
+        # and write in the volume, otherwise the round below takes no snapshot
+        # at all: an unchanged volume is not snapshotted again
+        self.write_a_byte(name2)
         # run the scheduler jobs and check we only have one more snapshot
         runjobs(SCHEDULE, test=True, last_runs=LAST_RUNS)
         self.assertEqual(

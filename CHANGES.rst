@@ -12,6 +12,22 @@ CHANGELOG
   avoid. The pair is now kept whatever the pattern says, and the README says
   that a host you stop replicating to leaves a pair to delete by hand.
 
+- A volume nobody wrote to is no longer snapshotted again. A snapshot or a
+  replication scheduled every minute wrote one identical subvolume per minute,
+  for as long as the volume stayed at rest, and replicating to two hosts wrote
+  two. The endpoint now compares the copy it just took with the previous
+  snapshot and deletes it when it carries nothing new, answering the name of
+  that previous snapshot. BTRFS cannot compare a live volume to a snapshot, so
+  the copy has to be taken before it can be judged; it is the only thing this
+  ever deletes, and it holds nothing that is not already elsewhere.
+
+  The answer of ``/VolumeDriver.Snapshot`` carries a new ``Created`` field, and
+  ``api.snapshot`` now returns the name and that flag. The scheduler needs it:
+  a replication that fails deletes the snapshot it took for the occasion, and
+  without the flag a network outage would have deleted a snapshot from an
+  earlier round. ``buttervolume snapshot`` still prints one name and nothing
+  else.
+
 - Sending a snapshot the remote host already holds no longer destroys the copy
   it has. ``buttervolume send`` sends whatever snapshot it is named, and naming
   the same one twice made it its own parent: the send succeeded, the remote

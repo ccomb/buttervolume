@@ -52,7 +52,10 @@ log = logging.getLogger()
 
 
 def snapshot(args, test=False):
-    res = api.snapshot(args.name[0], test=test)
+    # only the name is printed: the command answers "which snapshot holds the
+    # state of this volume", and main() reads a False as an exit code of 1,
+    # which a tuple could never be
+    res, _ = api.snapshot(args.name[0], test=test)
     if res:
         print(res)
     return res
