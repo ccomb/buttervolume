@@ -54,6 +54,18 @@ CHANGELOG
   now what answers the question, and a snapshot that is already there is
   refused with an empty error rather than sent.
 
+- The README now says which of replication and synchronization to reach for,
+  and why. The two were listed side by side as if they were two ways of doing
+  the same thing, and they are opposites: a replication carries the volume
+  whole and replaces it, a synchronization merges files into the live volume
+  and never deletes any. Reading one as a cheaper version of the other costs
+  data either way, so the choice has its own section now, and the two sections
+  it chooses between point back at it. The synchronization section also
+  promised that ``buttervolume sync`` snapshots the volume before pulling,
+  which only the scheduled synchronization does: the one-shot command writes
+  straight into the live volume, so whoever ran it by hand believed they had a
+  recovery point they did not have.
+
 - Buttervolume now says it needs Python 3.11 or later. Nothing declared it, so
   each version of ``uv`` invented its own floor and rewrote ``uv.lock`` on the
   next command it was given, and an installation on an older Python failed on

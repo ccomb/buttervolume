@@ -23,7 +23,9 @@ BTRFS Volume plugin for Docker
 - Restore a snapshot to its original volume or under a new volume
 - List and remove existing snapshots of your volumes
 - Clone your Docker volumes
-- Replicate or Sync your volumes to another host
+- Replicate a volume to another host, to move an application or survive a
+  host failure
+- Synchronize a volume between several hosts that all write to it at once
 - Run periodic snapshots, sync or replication of your volumes
 - Remove your old snapshots periodically
 - Pause or resume the periodic jobs, either individually or globally
@@ -510,6 +512,56 @@ You can delete a snapshot with::
 to live in ``/var/lib/buttervolume/snapshots``.
 
 
+Choosing between replication and synchronization
+------------------------------------------------
+
+Buttervolume offers two ways to carry the data of a volume to another host,
+and they are not two flavours of the same thing: one replaces, the other
+merges. Picking the wrong one either loses data or corrupts it, so the choice
+is worth a minute.
+
+Say the volume ``filestore`` exists on both ``host1`` and ``host2``, with a
+container running on each. ``host1`` has just written ``a.txt``, and ``host2``
+has just written ``b.txt``.
+
+**Replication** sends a snapshot of the volume of ``host1`` to ``host2``.
+Restoring it there gives ``host2`` exactly what ``host1`` holds, and ``b.txt``
+is gone. What travels is the volume as a whole, as it stood at one instant.
+
+**Synchronization** pulls the files of the volume of ``host1`` into the live
+volume of ``host2``, which then holds both ``a.txt`` and ``b.txt``. Nothing is
+replaced, files are added.
+
+So the question to ask is not which one is faster. It is how many hosts write
+to the volume.
+
+**One host writes at a time: replicate.** This is the failover case, and the
+"move this application to another node" case. It works with any data,
+including a database, because a BTRFS snapshot is a coherent image of the
+whole volume at one instant. What replication cannot do is merge: two hosts
+replicating to each other and restoring would each throw away the work of the
+other, and the last one to speak would win.
+
+**Several hosts write at the same time: synchronize.** Each host pulls from
+all the others, so they converge. This only holds for one shape of data: a
+directory of files that are added and never modified in place, such as a store
+of attachments named after their checksum, where the file ``3f2a9c...`` has
+the same content everywhere and the direction of the copy does not matter.
+``rsync`` merges file by file, and data whose coherence is global cannot
+survive that: a PostgreSQL data directory synchronized this way is destroyed.
+
+Synchronization never deletes, and that is deliberate. There is no
+``--delete`` in the ``rsync`` command, because when you pull from several
+hosts, a file deleted on another host and a file never created there look
+exactly the same: absent. Deleting on that evidence would make the pull of
+each host erase the contributions of the others. So a file you delete locally
+comes back at the next synchronization, and emptying such a volume for good
+means removing the scheduled jobs on every host first.
+
+The two can serve the same volume: synchronize between the hosts that run the
+application, and replicate to a host that runs nothing and keeps the history.
+
+
 Replicate a snapshot to another host
 ------------------------------------
 
@@ -591,16 +643,22 @@ to each other should agree on the time.
 Synchronize a volume from another host volume
 ---------------------------------------------
 
-You can receive data from a remote volume, so in case there is a volume on
-the remote host with the **same name**, it will get new and most recent data
-from the distant volume and replace in the local volume. Before running the
-``rsync`` command a snapshot is made on the local machine to manage recovery::
+Synchronization pulls the files of a remote volume of the **same name** into
+the local volume, merging them with what is already there. Read `Choosing
+between replication and synchronization`_ first: this is the right tool only
+when several hosts write to the volume at the same time, and only for data
+that survives a file by file merge::
 
     buttervolume sync <volume> <host1> [<host2>][...]
 
-The intent is to synchronize a volume between multi hosts on running
-containers, so you should schedule that action on each nodes from all remote
-hosts.
+The intent is to synchronize a volume between several hosts running
+containers, so you should schedule that action on each node, from all the
+other hosts.
+
+A scheduled synchronization snapshots the volume before it pulls, and logs the
+name of that snapshot, so that a transfer stopped halfway can be recovered
+from. The one-shot ``buttervolume sync`` command does not: it writes straight
+into the live volume.
 
 .. note::
 
@@ -609,7 +667,9 @@ hosts.
 
 .. warning::
 
-   Make sure your application is able to handle such synchronisation
+   Make sure your application is able to handle such synchronisation. A file
+   by file merge cannot keep globally coherent data coherent: do not
+   synchronize the volume of a database, replicate it instead.
 
 
 Purge old snapshots
@@ -713,8 +773,8 @@ It should create a snapshot every day, then purge snapshots everydays while
 keeping all snapshots in the last 24h, then one snapshot per day during one
 month, then one snapshot per month during only one year.
 
-**Schedule a syncrhonization** of volume ``foovolume`` from ``remote_host1``
-abd ``remote_host2``::
+**Schedule a synchronization** of volume ``foovolume`` from ``remote_host1``
+and ``remote_host2``::
 
     buttervolume schedule synchronize:remote_host1,remote_host2 60 foovolume
 
