@@ -122,6 +122,9 @@ class Subvolume:
         ``other_path`` is the parent: the difference is what this one adds to
         it. An incremental stream carrying nothing but its ``snapshot``
         header, a single line under ``receive --dump``, says nothing changed.
+        The lines are counted on the bytes and nothing is decoded: the dump
+        prints the value of an extended attribute exactly as it is, so a
+        volume holding a binary one would raise where it has to answer.
 
         Neither command goes through ``run_safe``: the send is piped into the
         dump, with the same four precautions as ``run_btrfs_send_receive``.
@@ -159,7 +162,7 @@ class Subvolume:
                 send_stderr_file.seek(0)
                 raise BtrfsError(
                     f"Comparing {self.path} to {other_path} timed out after "
-                    f"{COMPARE_TIMEOUT}s: {send_stderr_file.read().decode()}"
+                    f"{COMPARE_TIMEOUT}s: {send_stderr_file.read().decode(errors='replace')}"
                 ) from None
 
             if send_proc.returncode != 0 or dump_proc.returncode != 0:
@@ -167,10 +170,11 @@ class Subvolume:
                 raise BtrfsError(
                     f"Could not compare {self.path} to {other_path} "
                     f"(send: {send_proc.returncode}, dump: {dump_proc.returncode}): "
-                    f"{send_stderr_file.read().decode()} {dump_stderr.decode()}"
+                    f"{send_stderr_file.read().decode(errors='replace')} "
+                    f"{dump_stderr.decode(errors='replace')}"
                 )
 
-        return len(dump.decode().splitlines()) == 1
+        return len(dump.splitlines()) == 1
 
     def create(self, cow=False):
         """Create a new BTRFS subvolume"""

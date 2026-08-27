@@ -604,6 +604,19 @@ class TestCase(unittest.TestCase):
         volume.snapshot(paths[2], readonly=True)
         self.assertFalse(btrfs.Subvolume(paths[2]).is_same_as(paths[1]))
 
+    def test_an_extended_attribute_nobody_can_read_as_text_is_still_compared(self):
+        """receive --dump writes the value of an attribute exactly as it is"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        volume = btrfs.Subvolume(join(VOLUMES_PATH, name))
+        before = join(SNAPSHOTS_PATH, f"{name}@2026-02-01T00:00:00.000000")
+        after = join(SNAPSHOTS_PATH, f"{name}@2026-02-02T00:00:00.000000")
+        volume.snapshot(before, readonly=True)
+        # the kind of thing a file server writes next to a file it stores
+        os.setxattr(join(VOLUMES_PATH, name, "foobar"), "user.binary", b"\xff\xfe\x00")
+        volume.snapshot(after, readonly=True)
+        self.assertFalse(btrfs.Subvolume(after).is_same_as(before))
+
     def test_an_unchanged_volume_is_not_snapshotted_again(self):
         """The answer names the snapshot that holds the state, and says who took it"""
         name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
