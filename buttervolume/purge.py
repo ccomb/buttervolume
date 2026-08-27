@@ -68,7 +68,11 @@ class Pattern:
 
 
 def compute_purges(snapshots, pattern, now, dtformat):
-    """Return the list of snapshots this pattern condemns, at this moment."""
+    """Return the list of snapshots this pattern condemns, at this moment.
+
+    Never the trace of a send, nor the snapshot it was made from: whatever
+    the pattern says, a replication keeps the parent its next send needs.
+    """
     snapshots = sorted(snapshots)
     # a purge does not delete what a send still needs: the trace of a send, and
     # the snapshot it was made from, which is the parent the next incremental
