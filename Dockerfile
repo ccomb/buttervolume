@@ -23,9 +23,9 @@ LABEL maintainer="Christophe Combelles <ccomb@free.fr>"
 # leaves its own smaller ones, so the copy on write flag is set by the same
 # tool as before
 # tini keeps sshd from leaving zombie processes behind
-# The ssh host keys are made here rather than at startup, as the Debian package
-# used to make them, so that restarting the plugin does not change the identity
-# the hosts replicating to it already know
+# No ssh host key is made here: the image is public, so a key baked into it
+# would be the same on every installation that pulls it. The entrypoint makes
+# them on the first start, in the directory that survives a restart
 RUN apk add --no-cache \
         btrfs-progs \
         e2fsprogs-extra \
@@ -40,8 +40,7 @@ RUN apk add --no-cache \
     && mkdir -p /run/docker/plugins \
     && mkdir -p /var/lib/buttervolume/volumes \
     && mkdir -p /var/lib/buttervolume/snapshots \
-    && mkdir -p /etc/buttervolume /root/.ssh \
-    && ssh-keygen -A
+    && mkdir -p /etc/buttervolume /root/.ssh
 
 # Copy the built application from builder stage
 COPY --from=builder /app /app

@@ -4,6 +4,24 @@ CHANGELOG
 4.0 (unreleased)
 ****************
 
+- The ssh server inside the plugin now makes its own host keys on the first
+  start, in ``/var/lib/buttervolume/ssh/``, instead of carrying the ones built
+  into the image.
+
+  Up to 3.13 those keys were made while the image was built, so they were part
+  of the published plugin. Everyone pulling a given tag ran the same ssh
+  identity, and anyone could read its private keys out of the image. Someone
+  able to redirect the connection between two hosts could then pass for the
+  host a snapshot was being sent to, and receive the contents of the volume,
+  since the sender's ``known_hosts`` check would pass. Logging in to a plugin
+  was never possible this way: that needs the client key, which has always been
+  made per installation.
+
+  On the first start after upgrading, the plugin presents a new host key, and
+  every host replicating to it reports a changed host key until its
+  ``known_hosts`` is refreshed. The keys published up to 3.13 should be treated
+  as known to everyone.
+
 - The plugin image is built on Alpine rather than Debian, and goes from 185 MB
   to 72 MB. Nothing of buttervolume changed: the weight was the base system.
   Debian brought coreutils, perl, bash, dpkg, apt, util-linux and systemd,
@@ -15,10 +33,7 @@ CHANGELOG
   uv too, so the build stage no longer runs an installer script either.
 
   The entrypoint is plain sh instead of bash, which Alpine does not carry, and
-  starts sshd directly since there is no ``service`` command. The ssh host keys
-  are now made in the Dockerfile, where the Debian package used to make them,
-  so restarting the plugin still does not change the identity the hosts
-  replicating to it already know.
+  starts sshd directly since there is no ``service`` command.
 
   Alpine 3.22 carries Python 3.12 where Debian 13 carried 3.13. Buttervolume
   asks for 3.11 or later, so this changes nothing, but it is worth knowing.

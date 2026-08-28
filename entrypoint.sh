@@ -10,7 +10,21 @@ mkdir -p /var/lib/buttervolume/ssh
 
 chown -R root:root /root/
 sed -r "s/[#]{0,1}Port [0-9]{2,5}/Port $SSH_PORT/g" /etc/ssh/sshd_config -i
-/usr/sbin/sshd
+
+# The ssh host keys live in /root/.ssh, which is the host's
+# /var/lib/buttervolume/ssh, so that they survive a restart. They are made here
+# rather than in the image because an image is public: a key built into it
+# would be the same one on every installation that pulls it, and anyone holding
+# it could pass for the host a snapshot is being sent to.
+for type in rsa ecdsa ed25519; do
+    if [ ! -f "/root/.ssh/ssh_host_${type}_key" ]; then
+        ssh-keygen -q -t "$type" -N "" -f "/root/.ssh/ssh_host_${type}_key"
+    fi
+done
+/usr/sbin/sshd \
+    -h /root/.ssh/ssh_host_rsa_key \
+    -h /root/.ssh/ssh_host_ecdsa_key \
+    -h /root/.ssh/ssh_host_ed25519_key
 
 if [ "$1" = 'test' ]; then
     set -e
