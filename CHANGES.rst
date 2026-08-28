@@ -22,10 +22,10 @@ CHANGELOG
   ``known_hosts`` is refreshed. The keys published up to 3.13 should be treated
   as known to everyone.
 
-- The plugin image is built on Alpine rather than Debian, and goes from 185 MB
-  to 72 MB. Nothing of buttervolume changed: the weight was the base system.
-  Debian brought coreutils, perl, bash, dpkg, apt, util-linux and systemd,
-  around 90 MB that a volume plugin never calls, systemd arriving as a
+- The plugin image is built on Alpine rather than Debian 12, and goes from
+  185 MB to 72 MB. Nothing of buttervolume changed: the weight was the base
+  system. Debian brought coreutils, perl, bash, dpkg, apt, util-linux and
+  systemd, around 90 MB that a volume plugin never calls, systemd arriving as a
   dependency of the ssh server. Busybox and apk do the same work in 2 MB.
 
   Alpine packages tini, so the Dockerfile no longer downloads it from GitHub at
@@ -35,23 +35,22 @@ CHANGELOG
   The entrypoint is plain sh instead of bash, which Alpine does not carry, and
   starts sshd directly since there is no ``service`` command.
 
-  Alpine 3.22 carries Python 3.12 where Debian 13 carried 3.13. Buttervolume
-  asks for 3.11 or later, so this changes nothing, but it is worth knowing.
+  The installed application no longer lands in the interpreter's site-packages
+  directory but in ``/app``, so the Dockerfile no longer writes a Python
+  version down anywhere and the next base system upgrade is one line.
+
+  The image asks for ``e2fsprogs-extra`` by name, because busybox otherwise
+  leaves its own smaller ``chattr`` and ``lsattr`` in place, and ``chattr`` is
+  how the ``nocow`` and ``compression`` options are applied to a volume.
+
+  Alpine 3.22 carries Python 3.12 and btrfs-progs 6.14, where Debian 12 carried
+  Python 3.11. Buttervolume asks for 3.11 or later, so this changes nothing,
+  but it is worth knowing.
 
 - A volume asked to do without copy on write is now checked by a test. The
   plugin asks ``chattr`` for the C flag and swallows a failure, so an image
   missing ``chattr``, or carrying one that does not know that flag, would have
   produced ordinary volumes and said nothing.
-
-- The Docker plugin now runs on Debian 13, which brings Python 3.13 and
-  btrfs-progs 6.14. The installed application no longer lands in the
-  interpreter's site-packages directory but in ``/app``, so the next Debian
-  upgrade no longer has to remember to change a Python version written down in
-  the Dockerfile.
-
-  The image now asks for ``e2fsprogs`` by name. Debian 12 happened to carry it
-  along, Debian 13 does not, and without it ``chattr`` is missing, which is how
-  the ``nocow`` and ``compression`` options are applied to a volume.
 
 - Buttervolume can now receive a snapshot from another host, where it could
   only send one. ``buttervolume receive <host> <volume>`` fetches the most
