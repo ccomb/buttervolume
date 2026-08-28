@@ -1,5 +1,5 @@
 # Build stage - includes development tools
-FROM debian:12 AS builder
+FROM debian:13 AS builder
 MAINTAINER Christophe Combelles. <ccomb@free.fr>
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -22,13 +22,14 @@ RUN mkdir /usr/src/buttervolume \
     && uv pip install --target /app .
 
 # Runtime stage - minimal dependencies
-FROM debian:12-slim
+FROM debian:13-slim
 LABEL maintainer="Christophe Combelles <ccomb@free.fr>"
 
 # Install runtime dependencies and create directories in one layer
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         btrfs-progs \
+        e2fsprogs \
         ca-certificates \
         python3 \
         python3-pytest \
@@ -45,8 +46,9 @@ RUN apt-get update \
     && mkdir -p /etc/buttervolume /root/.ssh
 
 # Copy the built application from builder stage
-COPY --from=builder /app /usr/local/lib/python3.11/site-packages/
-ENV PYTHONPATH=/usr/local/lib/python3.11/site-packages
+COPY --from=builder /app /app
+ENV PYTHONPATH=/app
+ENV PATH="/app/bin:$PATH"
 
 # add tini to avoid sshd zombie processes
 ENV TINI_VERSION=v0.19.0
