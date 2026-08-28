@@ -529,8 +529,9 @@ Restoring it there gives ``host2`` exactly what ``host1`` holds, and ``b.txt``
 is gone. What travels is the volume as a whole, as it stood at one instant.
 
 **Synchronization** pulls the files of the volume of ``host1`` into the live
-volume of ``host2``, which then holds both ``a.txt`` and ``b.txt``. Nothing is
-replaced, files are added.
+volume of ``host2``, which then holds both ``a.txt`` and ``b.txt``. No file is
+deleted, but a file that exists on both hosts is replaced by the copy that
+comes in, even when the local one is the newer of the two.
 
 So the question to ask is not which one is faster. It is how many hosts write
 to the volume.
