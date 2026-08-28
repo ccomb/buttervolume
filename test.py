@@ -19,8 +19,7 @@ import threading
 import time
 import unittest
 import uuid
-import weakref
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from datetime import datetime, timedelta
 from os.path import join
 from subprocess import CalledProcessError, check_output, run
@@ -1688,7 +1687,7 @@ class TestCase(unittest.TestCase):
         self.create_a_volume_with_a_file(name)
         # We can't use same subvolume name twice on the same host so use a
         # non btrf directory for testing purpose
-        with TemporaryDirectory(path=remote_path) as remote_path:
+        with temporary_directory(remote_path) as remote_path:
             with open(join(remote_path, "foobar"), "w") as f:
                 f.write("test sync")
             self.app.post(
@@ -1758,7 +1757,7 @@ class TestCase(unittest.TestCase):
             LAST_RUNS,
             {"synchronize:localhost,wronghost.mlf": {name: datetime.now() - timedelta(days=1)}},
         )
-        with TemporaryDirectory(path=remote_path) as remote_path:
+        with temporary_directory(remote_path) as remote_path:
             with open(join(remote_path, "foobar"), "w") as f:
                 f.write("test sync")
             runjobs(SCHEDULE, test=True, last_runs=LAST_RUNS)
@@ -2269,33 +2268,22 @@ class TestLastRunsFile(unittest.TestCase):
         self.assertTrue(left[0].startswith("lastruns.csv."), left)
 
 
-class TemporaryDirectory(tempfile.TemporaryDirectory):
-    """Create and return a temporary directory. This change the
-    tempfile.TemporaryDirectory behavior by letting user provide his wished
-    directory, if directory already exists that directory and everything
-    contained in it are removed.  For
-    example:
-        with TemporaryDirectory('/tmp/mydir') as tmpdir:
-            ...
-    Upon exiting the context, the directory and everything contained
-    in it are removed.
+@contextmanager
+def temporary_directory(path):
+    """Give an empty directory at the path of your choosing.
+
+    Whatever was already there is removed on the way in, and the directory is
+    removed again on the way out. ``tempfile.TemporaryDirectory`` picks the
+    path itself, and subclassing it to say where meant copying private
+    attributes it renames from one Python version to the next.
     """
-
-    def __init__(self, suffix=None, prefix=None, dir=None, path=None):
-        self.name = self.mkdir(path) if path else tempfile.mkdtemp(suffix, prefix, dir)
-        self._ignore_cleanup_errors = False  # Add missing attribute for Python 3.11+ compatibility
-        self._finalizer = weakref.finalize(
-            self,
-            self._cleanup,
-            self.name,
-            warn_message=f"Implicitly cleaning up {self!r}",
-        )
-
-    def mkdir(self, path):
-        if os.path.isdir(path):
-            shutil.rmtree(path)
-        os.mkdir(path, 0o700)
-        return path
+    if os.path.isdir(path):
+        shutil.rmtree(path)
+    os.mkdir(path, 0o700)
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path)
 
 
 if __name__ == "__main__":

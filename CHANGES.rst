@@ -1,8 +1,18 @@
 CHANGELOG
 =========
 
-3.13 (unreleased)
-*****************
+4.0 (unreleased)
+****************
+
+- The Docker plugin now runs on Debian 13, which brings Python 3.13 and
+  btrfs-progs 6.14. The installed application no longer lands in the
+  interpreter's site-packages directory but in ``/app``, so the next Debian
+  upgrade no longer has to remember to change a Python version written down in
+  the Dockerfile.
+
+  The image now asks for ``e2fsprogs`` by name. Debian 12 happened to carry it
+  along, Debian 13 does not, and without it ``chattr`` is missing, which is how
+  the ``nocow`` and ``compression`` options are applied to a volume.
 
 - Buttervolume can now receive a snapshot from another host, where it could
   only send one. ``buttervolume receive <host> <volume>`` fetches the most
