@@ -16,15 +16,20 @@ sed -r "s/[#]{0,1}Port [0-9]{2,5}/Port $SSH_PORT/g" /etc/ssh/sshd_config -i
 # rather than in the image because an image is public: a key built into it
 # would be the same one on every installation that pulls it, and anyone holding
 # it could pass for the host a snapshot is being sent to.
+# A host that cannot make a key or start its ssh server still serves its own
+# volumes, so this does not stop the plugin, but it says so rather than leaving
+# a replication to fail later with nothing explaining why.
 for type in rsa ecdsa ed25519; do
     if [ ! -f "/root/.ssh/ssh_host_${type}_key" ]; then
-        ssh-keygen -q -t "$type" -N "" -f "/root/.ssh/ssh_host_${type}_key"
+        ssh-keygen -q -t "$type" -N "" -f "/root/.ssh/ssh_host_${type}_key" \
+            || echo "buttervolume: could not write the $type ssh host key in /var/lib/buttervolume/ssh" >&2
     fi
 done
 /usr/sbin/sshd \
     -h /root/.ssh/ssh_host_rsa_key \
     -h /root/.ssh/ssh_host_ecdsa_key \
-    -h /root/.ssh/ssh_host_ed25519_key
+    -h /root/.ssh/ssh_host_ed25519_key \
+    || echo "buttervolume: the ssh server did not start, no host can replicate to this one" >&2
 
 if [ "$1" = 'test' ]; then
     set -e
