@@ -604,6 +604,17 @@ included in the plugin.
 - Enable ``StrictHostKeyChecking no`` in ``/var/lib/buttervolume/ssh/config``
 - **Important**: Restart Docker daemons after any SSH configuration changes
 
+The ssh server's own host keys are made on the first start, in
+``/var/lib/buttervolume/ssh/``, and kept from one restart to the next. They are
+deliberately not part of the plugin image: an image is public, so a key built
+into it would be the same one on every installation that pulls it, and anyone
+holding it could pass for the host a snapshot is being sent to.
+
+Versions up to 3.13 did build the host keys into the image. On the first start
+after upgrading, this plugin presents a new key, and every host replicating to
+it reports a changed host key until its ``known_hosts`` is refreshed. Those
+published keys should be treated as known to everyone.
+
 The default SSH_PORT of the ssh server included in the plugin is **1122**. You can
 change it with `docker plugin set ccomb/buttervolume SSH_PORT=<PORT>` before
 enabling the plugin.

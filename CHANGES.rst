@@ -4,15 +4,53 @@ CHANGELOG
 4.0 (unreleased)
 ****************
 
-- The Docker plugin now runs on Debian 13, which brings Python 3.13 and
-  btrfs-progs 6.14. The installed application no longer lands in the
-  interpreter's site-packages directory but in ``/app``, so the next Debian
-  upgrade no longer has to remember to change a Python version written down in
-  the Dockerfile.
+- The ssh server inside the plugin now makes its own host keys on the first
+  start, in ``/var/lib/buttervolume/ssh/``, instead of carrying the ones built
+  into the image.
 
-  The image now asks for ``e2fsprogs`` by name. Debian 12 happened to carry it
-  along, Debian 13 does not, and without it ``chattr`` is missing, which is how
-  the ``nocow`` and ``compression`` options are applied to a volume.
+  Up to 3.13 those keys were made while the image was built, so they were part
+  of the published plugin. Everyone pulling a given tag ran the same ssh
+  identity, and anyone could read its private keys out of the image. Someone
+  able to redirect the connection between two hosts could then pass for the
+  host a snapshot was being sent to, and receive the contents of the volume,
+  since the sender's ``known_hosts`` check would pass. Logging in to a plugin
+  was never possible this way: that needs the client key, which has always been
+  made per installation.
+
+  On the first start after upgrading, the plugin presents a new host key, and
+  every host replicating to it reports a changed host key until its
+  ``known_hosts`` is refreshed. The keys published up to 3.13 should be treated
+  as known to everyone.
+
+- The plugin image is built on Alpine rather than Debian 12, and goes from
+  185 MB to 72 MB. Nothing of buttervolume changed: the weight was the base
+  system. Debian brought coreutils, perl, bash, dpkg, apt, util-linux and
+  systemd, around 90 MB that a volume plugin never calls, systemd arriving as a
+  dependency of the ssh server. Busybox and apk do the same work in 2 MB.
+
+  Alpine packages tini, so the Dockerfile no longer downloads it from GitHub at
+  build time, and curl leaves with it since nothing else used it. It packages
+  uv too, so the build stage no longer runs an installer script either.
+
+  The entrypoint is plain sh instead of bash, which Alpine does not carry, and
+  starts sshd directly since there is no ``service`` command.
+
+  The installed application no longer lands in the interpreter's site-packages
+  directory but in ``/app``, so the Dockerfile no longer writes a Python
+  version down anywhere and the next base system upgrade is one line.
+
+  The image asks for ``e2fsprogs-extra`` by name, because busybox otherwise
+  leaves its own smaller ``chattr`` and ``lsattr`` in place, and ``chattr`` is
+  how the ``nocow`` and ``compression`` options are applied to a volume.
+
+  Alpine 3.22 carries Python 3.12 and btrfs-progs 6.14, where Debian 12 carried
+  Python 3.11. Buttervolume asks for 3.11 or later, so this changes nothing,
+  but it is worth knowing.
+
+- A volume asked to do without copy on write is now checked by a test. The
+  plugin asks ``chattr`` for the C flag and swallows a failure, so an image
+  missing ``chattr``, or carrying one that does not know that flag, would have
+  produced ordinary volumes and said nothing.
 
 - Buttervolume can now receive a snapshot from another host, where it could
   only send one. ``buttervolume receive <host> <volume>`` fetches the most
