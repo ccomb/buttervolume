@@ -1,68 +1,52 @@
 # Build stage - includes development tools
-FROM debian:13 AS builder
+FROM alpine:3.22 AS builder
 MAINTAINER Christophe Combelles. <ccomb@free.fr>
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apk add --no-cache \
         python3 \
-        curl \
+        uv \
         ca-certificates \
-        git \
-        unzip \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install uv
-ADD https://astral.sh/uv/install.sh /uv-installer.sh
-RUN sh /uv-installer.sh && rm /uv-installer.sh
-ENV PATH="/root/.local/bin/:$PATH"
+        unzip
 
 COPY buttervolume.zip /
-RUN mkdir /usr/src/buttervolume \
+RUN mkdir -p /usr/src/buttervolume \
     && unzip -d /usr/src/buttervolume buttervolume.zip \
     && cd /usr/src/buttervolume \
     && uv pip install --target /app .
 
 # Runtime stage - minimal dependencies
-FROM debian:13-slim
+FROM alpine:3.22
 LABEL maintainer="Christophe Combelles <ccomb@free.fr>"
 
 # Install runtime dependencies and create directories in one layer
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+# e2fsprogs-extra puts the reference chattr and lsattr where busybox otherwise
+# leaves its own smaller ones, so the copy on write flag is set by the same
+# tool as before
+# tini keeps sshd from leaving zombie processes behind
+# The ssh host keys are made here rather than at startup, as the Debian package
+# used to make them, so that restarting the plugin does not change the identity
+# the hosts replicating to it already know
+RUN apk add --no-cache \
         btrfs-progs \
-        e2fsprogs \
+        e2fsprogs-extra \
         ca-certificates \
         python3 \
-        python3-pytest \
-        python3-webtest \
+        py3-pytest \
+        py3-webtest \
+        openssh \
         openssh-client \
-        openssh-server \
         rsync \
-        curl \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
-    && apt-get clean \
+        tini \
     && mkdir -p /run/docker/plugins \
     && mkdir -p /var/lib/buttervolume/volumes \
     && mkdir -p /var/lib/buttervolume/snapshots \
-    && mkdir -p /etc/buttervolume /root/.ssh
+    && mkdir -p /etc/buttervolume /root/.ssh \
+    && ssh-keygen -A
 
 # Copy the built application from builder stage
 COPY --from=builder /app /app
 ENV PYTHONPATH=/app
 ENV PATH="/app/bin:$PATH"
-
-# add tini to avoid sshd zombie processes
-ENV TINI_VERSION=v0.19.0
-RUN set -eux; \
-    dpkgArch="$(dpkg --print-architecture)"; \
-    case "${dpkgArch##*-}" in \
-        amd64) tiniArch='amd64' ;; \
-        arm64) tiniArch='arm64' ;; \
-        armhf) tiniArch='armhf' ;; \
-        i386) tiniArch='i386' ;; \
-        *) echo >&2 "unsupported architecture: ${dpkgArch}"; exit 1 ;; \
-    esac; \
-    curl -fsSL "https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini-${tiniArch}" -o /tini; \
-    chmod +x /tini
 
 COPY entrypoint.sh /
 ENTRYPOINT ["/entrypoint.sh"]

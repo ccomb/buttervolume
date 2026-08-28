@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 SSH_PORT=${SSH_PORT:-1122}
 
@@ -8,11 +8,11 @@ SSH_PORT=${SSH_PORT:-1122}
 mkdir -p /var/lib/buttervolume/config
 mkdir -p /var/lib/buttervolume/ssh
 
-chown -R root: /root/
+chown -R root:root /root/
 sed -r "s/[#]{0,1}Port [0-9]{2,5}/Port $SSH_PORT/g" /etc/ssh/sshd_config -i
-service ssh start
+/usr/sbin/sshd
 
-if [[ $1 == 'test' ]]; then
+if [ "$1" = 'test' ]; then
     set -e
     set -x
     # create ssh key which let root users to access to localhost
@@ -26,5 +26,5 @@ if [[ $1 == 'test' ]]; then
     # Run tests with pytest
     exec python3 -m pytest test.py -v
 else
-    /tini -s -- buttervolume $@
+    /sbin/tini -s -- buttervolume $@
 fi

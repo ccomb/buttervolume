@@ -4,6 +4,25 @@ CHANGELOG
 4.0 (unreleased)
 ****************
 
+- The plugin image is built on Alpine rather than Debian, and goes from 185 MB
+  to 72 MB. Nothing of buttervolume changed: the weight was the base system.
+  Debian brought coreutils, perl, bash, dpkg, apt, util-linux and systemd,
+  around 90 MB that a volume plugin never calls, systemd arriving as a
+  dependency of the ssh server. Busybox and apk do the same work in 2 MB.
+
+  Alpine packages tini, so the Dockerfile no longer downloads it from GitHub at
+  build time, and curl leaves with it since nothing else used it. It packages
+  uv too, so the build stage no longer runs an installer script either.
+
+  The entrypoint is plain sh instead of bash, which Alpine does not carry, and
+  starts sshd directly since there is no ``service`` command. The ssh host keys
+  are now made in the Dockerfile, where the Debian package used to make them,
+  so restarting the plugin still does not change the identity the hosts
+  replicating to it already know.
+
+  Alpine 3.22 carries Python 3.12 where Debian 13 carried 3.13. Buttervolume
+  asks for 3.11 or later, so this changes nothing, but it is worth knowing.
+
 - A volume asked to do without copy on write is now checked by a test. The
   plugin asks ``chattr`` for the C flag and swallows a failure, so an image
   missing ``chattr``, or carrying one that does not know that flag, would have
