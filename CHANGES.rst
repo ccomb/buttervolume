@@ -4,6 +4,23 @@ CHANGELOG
 3.13 (unreleased)
 *****************
 
+- Buttervolume can now receive a snapshot from another host, where it could
+  only send one. ``buttervolume receive <host> <volume>`` fetches the most
+  recent snapshot that host keeps of that volume, incrementally when the two
+  still share an older one, and prints its name. It restores nothing: which
+  snapshot becomes the volume stays a separate decision.
+
+  A host that keeps no snapshot of the volume and a host that could not answer
+  are two different answers. The listing raises when ssh fails or takes too
+  long, so an empty answer only ever means a host that answered and holds
+  nothing. Reading silence as "there is nothing over there" is how the good
+  copy of a volume gets replaced by an older one.
+
+  The trace ``<volume>@<datetime>@<host>`` is written after a receive as it is
+  after a send, since a snapshot that just arrived from a host is a snapshot
+  that host holds. Without it, the first send back would carry the whole
+  volume again.
+
 - A purge no longer deletes what a replication needs. The trace of the last
   send to a host is a snapshot like any other, with a date the purge could
   read, so a retention pattern would delete it along with the snapshot it was

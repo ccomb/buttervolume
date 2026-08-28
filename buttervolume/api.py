@@ -155,6 +155,16 @@ def send(snapshot, host, test=False):
     return get_from(_post("/VolumeDriver.Snapshot.Send", payload, test), "") is not False
 
 
+def receive(volume, host, test=False):
+    """Fetch the last snapshot another host has of a volume, and answer its name."""
+    payload = {"Name": volume, "Host": host}
+    if test:
+        # the plugin reads it to fetch the snapshot from next door rather than
+        # from another machine
+        payload["Test"] = True
+    return get_from(_post("/VolumeDriver.Snapshot.Receive", payload, test), "Snapshot")
+
+
 def sync(volumes, hosts, test=False):
     """Pull these volumes back from these hosts, and answer whether it went."""
     payload = {"Volumes": volumes, "Hosts": hosts}

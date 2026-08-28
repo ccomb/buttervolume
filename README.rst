@@ -425,6 +425,7 @@ When buttervolume is installed, it provides a command line tool
     restore             Restore a snapshot (optionally to a different volume)
     clone               Clone a volume as new volume
     send                Send a snapshot to another host
+    receive             Receive from another host its last snapshot of a volume
     sync                Synchronise a volume from a remote host volume
     rm                  Delete a snapshot
     purge               Purge old snapshot using a purge pattern
@@ -525,10 +526,12 @@ consuming a lot of bandwith or disk space::
 to live in ``/var/lib/buttervolume/snapshots`` and is replicated to the same path on
 the remote host.
 
-What the remote host already holds is read from the trace kept locally after
-each send, named ``<volume>@<datetime>@<host>``, and nothing is asked of the
-remote host. So a snapshot whose trace is there is not sent a second time, and
-a copy deleted on the remote host behind Buttervolume's back goes unnoticed:
+What the remote host already holds is read from the trace kept locally,
+named ``<volume>@<datetime>@<host>``, and nothing is asked of the remote host.
+That trace is written after each send, and after each receive from that host,
+since a snapshot that has just arrived from a host is a snapshot that host
+holds. So a snapshot whose trace is there is not sent a second time, and a
+copy deleted on the remote host behind Buttervolume's back goes unnoticed:
 delete the trace as well, and the next send carries the whole volume again.
 
 A replication scheduled on a volume at rest therefore costs nothing at all: the
@@ -551,6 +554,39 @@ included in the plugin.
 The default SSH_PORT of the ssh server included in the plugin is **1122**. You can
 change it with `docker plugin set ccomb/buttervolume SSH_PORT=<PORT>` before
 enabling the plugin.
+
+Receive a snapshot from another host
+------------------------------------
+
+The other direction, for a host that wants back what another one holds::
+
+    buttervolume receive <host> <volume>
+
+It names a **volume**, where ``send`` names a snapshot: whoever receives does
+not know what the other host has, which is precisely the question this asks.
+The most recent snapshot that host keeps of that volume is fetched into
+``/var/lib/buttervolume/snapshots``, and its name is printed. Only the
+difference crosses the network when the two hosts still share an older
+snapshot to build on.
+
+The command **does not restore anything**. It brings a snapshot over, and
+which snapshot becomes the volume stays a separate, explicit decision::
+
+    buttervolume receive node2 www
+    buttervolume restore www
+
+A host that keeps no snapshot of that volume and a host that could not answer
+are two different answers, and never the same one. An unreachable host, a
+refused connection, an ssh that takes too long: each is reported as the error
+it is. Only a host that answered and holds nothing is reported as holding
+nothing. Reading silence as "there is nothing over there" is how the good copy
+of a volume gets replaced by an older one.
+
+A snapshot carries the moment it was taken on the machine that took it, and
+"the most recent" is read from that name. A host whose clock runs ahead
+therefore passes its copy off as the most recent one, so the hosts replicating
+to each other should agree on the time.
+
 
 Synchronize a volume from another host volume
 ---------------------------------------------

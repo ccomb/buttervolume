@@ -38,6 +38,7 @@ from buttervolume import (
 from buttervolume.btrfs import BtrfsError
 from buttervolume.config import (
     DTFORMAT,
+    REMOTE_TIMEOUT,
     RSYNC_TIMEOUT,
     SCHEDULE,
     SCHEDULE_DISABLED,
@@ -52,6 +53,7 @@ from buttervolume.names import (
     new_snapshot,
     parsed,
     sent_snapshots,
+    snapshot_to_fetch,
     snapshots_of,
     validate_hostname,
     validate_snapshot_name,
@@ -206,6 +208,119 @@ def run_btrfs_send_receive(
     return receive_stdout.decode()
 
 
+def run_btrfs_receive(remote_host, remote_snapshot_path, remote_parent_path=None, port="1122"):
+    """Securely run btrfs send/receive over SSH, the other way round.
+
+    `remote_parent_path` is a path on the other machine, not here: it goes
+    into the command that host runs. Its counterpart on the send side is a
+    local path, and on a test bench where the two directories sit on the same
+    filesystem, one passed for the other goes unnoticed.
+
+    Nothing is synced first, unlike the send side, which syncs because the
+    snapshot it is about to send was just taken here. Nothing was written here
+    now, and the snapshot over there was committed long ago.
+    """
+    validate_hostname(remote_host)
+
+    # Build the send command the remote host will run
+    send_cmd = ["btrfs", "send"]
+    if remote_parent_path:
+        send_cmd.extend(["-p", remote_parent_path])
+    send_cmd.append(remote_snapshot_path)
+
+    ssh_cmd = [
+        "ssh",
+        "-p",
+        port,
+        "-o",
+        "StrictHostKeyChecking=no",
+        remote_host,
+        " ".join(send_cmd),
+    ]
+    receive_cmd = ["btrfs", "receive", SNAPSHOTS_PATH]
+
+    # Execute ssh send | receive using subprocess.
+    # The stderr of the sending side goes to a temporary file rather than a
+    # pipe, for the same reason as on the send side: nobody can read that pipe
+    # while waiting for the receive side, and a verbose failure would fill it
+    # and deadlock both processes.
+    with tempfile.TemporaryFile() as send_stderr_file:
+        send_proc = subprocess.Popen(ssh_cmd, stdout=subprocess.PIPE, stderr=send_stderr_file)
+        receive_proc = subprocess.Popen(
+            receive_cmd, stdin=send_proc.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+
+        send_proc.stdout.close()  # Allow send_proc to receive a SIGPIPE if receive_proc exits
+
+        # one deadline for the two waits, so the whole transfer really is
+        # bounded by SEND_TIMEOUT and not by twice that
+        deadline = time.monotonic() + SEND_TIMEOUT
+        try:
+            receive_stdout, receive_stderr = receive_proc.communicate(timeout=SEND_TIMEOUT)
+            send_proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            send_proc.kill()
+            receive_proc.kill()
+            send_proc.wait()
+            receive_proc.wait()
+            send_stderr_file.seek(0)
+            raise ReplicationTimeoutError(
+                f"btrfs send/receive from {remote_host} timed out after {SEND_TIMEOUT}s: "
+                f"{send_stderr_file.read().decode(errors='replace')}"
+            ) from None
+
+        if send_proc.returncode != 0 or receive_proc.returncode != 0:
+            send_stderr_file.seek(0)
+            raise ReplicationError(
+                f"btrfs send/receive from {remote_host} failed "
+                f"(send: {send_proc.returncode}, receive: {receive_proc.returncode}): "
+                f"{send_stderr_file.read().decode(errors='replace')} "
+                f"{receive_stderr.decode(errors='replace')}"
+            )
+
+    return receive_stdout.decode(errors="replace")
+
+
+def snapshots_on_remote(remote_host, remote_path, port):
+    """The names this host keeps in that directory.
+
+    An empty answer means it answered and keeps nothing there. A host that
+    could not answer raises instead, and is never read as a host with nothing:
+    acting on "there is nothing over there" when nobody said so is how the
+    good copy of a volume gets replaced by an older one.
+
+    The whole directory is listed rather than a `volume@*` pattern. The
+    pattern would carry a name into a shell on the other machine, and `ls`
+    leaves with the same non-zero status when nothing matches as when it
+    failed, which is exactly the difference this function exists to keep.
+    """
+    validate_hostname(remote_host)
+    ssh_cmd = [
+        "ssh",
+        "-p",
+        port,
+        "-o",
+        "StrictHostKeyChecking=no",
+        remote_host,
+        f"ls -1 {remote_path}",
+    ]
+    try:
+        listing = subprocess.run(ssh_cmd, capture_output=True, timeout=REMOTE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise ReplicationTimeoutError(
+            f"{remote_host} did not say what it keeps within {REMOTE_TIMEOUT}s"
+        ) from None
+    if listing.returncode != 0:
+        raise ReplicationError(
+            f"Could not read the snapshots of {remote_host}: "
+            f"{listing.stderr.decode(errors='replace')}"
+        )
+    # nothing is decoded strictly: a name we cannot read is one this host
+    # should not have written, and it is refused later by name rather than
+    # here by an error nobody expected
+    return listing.stdout.decode(errors="replace").splitlines()
+
+
 @route("/Plugin.Activate")
 def plugin_activate(_):
     return {"Implements": ["VolumeDriver"]}
@@ -355,6 +470,30 @@ def driver_cap(_):
     return {"Capabilities": {"Scope": "local"}}
 
 
+def keep_trace(snapshot, remote_host):
+    """Remember that this host holds this snapshot, and forget the older ones.
+
+    That trace is the whole memory of what is over there: a later send reads it
+    to know there is nothing to send, and an incremental one is built on the
+    snapshot it was made from. The traces of the previous exchanges with that
+    host go, since this one says the same thing about a more recent snapshot;
+    the snapshots they were made from stay, and a purge takes them when its
+    pattern says so.
+    """
+    trace = snapshot.sent_to(remote_host)
+    if not os.path.exists(snapshotpath(str(trace))):
+        btrfs.Subvolume(snapshotpath(str(snapshot))).snapshot(
+            snapshotpath(str(trace)), readonly=True
+        )
+    for old in sent_snapshots(snapshot.volume, remote_host, os.listdir(SNAPSHOTS_PATH)):
+        if old == trace:
+            continue
+        try:
+            btrfs.Subvolume(snapshotpath(str(old))).delete()
+        except Exception as e:
+            log.warning("Failed to delete old snapshot %s: %s", str(old), str(e))
+
+
 @route("/VolumeDriver.Snapshot.Send")
 def snapshot_send(req):
     """The last sent snapshot is remembered by adding a suffix with the target"""
@@ -420,19 +559,110 @@ def snapshot_send(req):
         # Send without parent
         run_btrfs_send_receive(snapshot_path, remote_host, remote_snapshots, None, port)
 
-    # Create local tracking snapshot
-    btrfs.Subvolume(snapshot_path).snapshot(
-        snapshotpath(str(snapshot.sent_to(remote_host))), readonly=True
-    )
-
-    # Clean up old tracking snapshots
-    for old_snapshot in already_sent:
-        try:
-            btrfs.Subvolume(snapshotpath(str(old_snapshot))).delete()
-        except Exception as e:
-            log.warning("Failed to delete old snapshot %s: %s", str(old_snapshot), str(e))
+    keep_trace(snapshot, remote_host)
 
     return {"Err": ""}
+
+
+# One receive at a time. A `btrfs receive` that stops early leaves behind what
+# it was writing, under the name the whole snapshot would have carried, and the
+# endpoint below takes that leftover away to try again without a parent. Two
+# calls at once would each take away what the other is writing, and neither
+# could say the half received copy was its own.
+receiving = threading.Lock()
+
+
+def is_a_whole_snapshot(path):
+    """Whether this holds a whole snapshot, and not half of one.
+
+    `btrfs receive` makes what it wrote read-only once it has written all of
+    it. A subvolume of the right name that can still be written to is what a
+    transfer that stopped early left behind, and nothing in it says how much of
+    the volume made it over.
+    """
+    return "readonly" in btrfs.Subvolume(path).show()["Flags"]
+
+
+def receive_or_clean(remote_host, remote_snapshot_path, path, remote_parent_path, port):
+    """Receive into `path`, and take away what is left there when it fails.
+
+    That leftover is the only thing deleted, and this call is the one that
+    created it, which the lock above is what makes true. Leaving it would stop
+    every later call, none of them being able to tell that name from a
+    snapshot.
+    """
+    try:
+        run_btrfs_receive(remote_host, remote_snapshot_path, remote_parent_path, port)
+    except ReplicationError:
+        if os.path.exists(path):
+            try:
+                btrfs.Subvolume(path).delete()
+            except BtrfsError as e:
+                log.warning("Could not take away the half received %s: %s", basename(path), e)
+        raise
+
+
+@route("/VolumeDriver.Snapshot.Receive")
+def snapshot_receive(req):
+    """Fetch from another host the most recent snapshot it has of a volume"""
+    test = req.get("Test", False)
+    volume = req["Name"]
+    remote_host = req["Host"]
+
+    validate_volume_name(volume)
+    validate_hostname(remote_host)
+    remote_snapshots = SNAPSHOTS_PATH if not test else TEST_REMOTE_PATH
+    port = os.getenv("SSH_PORT", "1122")
+
+    with receiving:
+        # the command names a volume, not a snapshot: whoever receives does not
+        # know what the other host has, which is the question being asked here
+        found = snapshot_to_fetch(
+            volume,
+            snapshots_on_remote(remote_host, remote_snapshots, port),
+            os.listdir(SNAPSHOTS_PATH),
+        )
+        if not found:
+            raise SnapshotNotFoundError(f"{remote_host} keeps no snapshot of volume '{volume}'")
+        snapshot, parent = found
+        path = snapshotpath(str(snapshot))
+
+        if os.path.exists(path):
+            if not is_a_whole_snapshot(path):
+                # the send side reads what the other host holds from a trace
+                # written after a transfer went through, so it never says yes
+                # by mistake. Here the answer is a name in a directory, which
+                # a transfer that failed leaves behind just the same.
+                raise ReplicationError(
+                    f"'{snapshot}' is here already but holds half a volume, left by a receive "
+                    f"that stopped early. Delete it with `buttervolume rm {snapshot}` to fetch "
+                    "it again"
+                )
+            log.info("Snapshot %s is already here, nothing to receive", snapshot)
+            keep_trace(snapshot, remote_host)
+            return {"Err": "", "Snapshot": str(snapshot)}
+
+        remote_path = join(remote_snapshots, str(snapshot))
+        parent_path = join(remote_snapshots, str(parent)) if parent else None
+        try:
+            log.info("Receiving snapshot %s from %s with parent %s", snapshot, remote_host, parent)
+            receive_or_clean(remote_host, remote_path, path, parent_path, port)
+        except ReplicationTimeoutError:
+            # receiving the whole volume would cross the same stalled link, and
+            # wait as long again: a transfer killed for hanging is not retried
+            raise
+        except ReplicationError as e:
+            if not parent_path:
+                raise
+            log.warning(
+                "Failed receiving %s with parent %s, receiving it whole: %s", snapshot, parent, e
+            )
+            receive_or_clean(remote_host, remote_path, path, None, port)
+
+        # that host holds this snapshot, we have just read it there. Without
+        # this trace the first send back would carry the whole volume again.
+        keep_trace(snapshot, remote_host)
+        return {"Err": "", "Snapshot": str(snapshot)}
 
 
 # One snapshot at a time. The endpoint below takes a copy, compares it with the
