@@ -4,6 +4,11 @@ CHANGELOG
 4.0 (unreleased)
 ****************
 
+- A volume asked to do without copy on write is now checked by a test. The
+  plugin asks ``chattr`` for the C flag and swallows a failure, so an image
+  missing ``chattr``, or carrying one that does not know that flag, would have
+  produced ordinary volumes and said nothing.
+
 - The Docker plugin now runs on Debian 13, which brings Python 3.13 and
   btrfs-progs 6.14. The installed application no longer lands in the
   interpreter's site-packages directory but in ``/app``, so the next Debian

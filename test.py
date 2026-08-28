@@ -437,6 +437,24 @@ class TestCase(unittest.TestCase):
         self.assertTrue(b"-C-" not in check_output(f"lsattr -d '{path}'", shell=True).split()[0])
         self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name}))
 
+    def test_disabled_cow(self):
+        """Check that asking for no copy on write really turns it off
+
+        The plugin asks chattr for the C flag and swallows a failure, so
+        nothing but the flag itself says whether it was applied.
+        """
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        path = join(VOLUMES_PATH, name)
+        resp = jsonloads(
+            self.app.post(
+                "/VolumeDriver.Create",
+                json.dumps({"Name": name, "Opts": {"copyonwrite": "false"}}),
+            ).body
+        )
+        self.assertEqual(resp, {"Err": ""})
+        self.assertIn(b"C", check_output(f"lsattr -d '{path}'", shell=True).split()[0])
+        self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name}))
+
     def test_compression_option(self):
         """Check that compression option works"""
         # Test with compression=true
