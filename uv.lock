@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.13'",
@@ -30,7 +30,7 @@ wheels = [
 
 [[package]]
 name = "buttervolume"
-version = "3.13.0"
+version = "4.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "bottle" },

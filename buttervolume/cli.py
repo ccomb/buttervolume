@@ -46,7 +46,7 @@ from buttervolume.purge import Pattern
 from buttervolume.schedule import Job, Purge, read_schedule, write_schedule
 from buttervolume.scheduler import scheduler
 
-VERSION = "3.13.0"
+VERSION = "4.0.0"
 logging.basicConfig(level=LOGLEVEL)
 log = logging.getLogger()
 

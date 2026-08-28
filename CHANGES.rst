@@ -1,8 +1,8 @@
 CHANGELOG
 =========
 
-3.13 (unreleased)
-*****************
+4.0 (unreleased)
+****************
 
 - The Docker plugin now runs on Debian 13, which brings Python 3.13 and
   btrfs-progs 6.14. The installed application no longer lands in the
