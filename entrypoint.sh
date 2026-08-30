@@ -1,5 +1,13 @@
 #!/bin/sh
 
+# A docker plugin is not started from the image configuration: docker gives it
+# the default path and nothing else, so the PATH and PYTHONPATH the Dockerfile
+# sets are missing. They are set again here, where they hold both for the
+# plugin and for a plain container.
+PATH="/app/bin:$PATH"
+PYTHONPATH=/app
+export PATH PYTHONPATH
+
 SSH_PORT=${SSH_PORT:-1122}
 
 # Ensure required directories exist in the mounted volume
@@ -9,6 +17,10 @@ mkdir -p /var/lib/buttervolume/config
 mkdir -p /var/lib/buttervolume/ssh
 
 chown -R root:root /root/
+# sshd refuses to start unless its privilege separation directory belongs to
+# root. The plugin rootfs is unpacked by whoever ran build.sh, so /var/empty
+# arrives owned by that user.
+chown root:root /var/empty
 sed -r "s/[#]{0,1}Port [0-9]{2,5}/Port $SSH_PORT/g" /etc/ssh/sshd_config -i
 
 # The ssh host keys live in /root/.ssh, which is the host's
