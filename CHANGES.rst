@@ -4,6 +4,11 @@ CHANGELOG
 4.0 (unreleased)
 ****************
 
+- The plugin starts again. A docker plugin is not started from the image
+  configuration, so the ``PATH`` and ``PYTHONPATH`` the Dockerfile sets were
+  not there and ``buttervolume`` was not found. The entrypoint sets them
+  itself now, where they hold both for the plugin and for a plain container.
+
 - The ssh server inside the plugin now makes its own host keys on the first
   start, in ``/var/lib/buttervolume/ssh/``, instead of carrying the ones built
   into the image.

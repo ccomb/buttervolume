@@ -1,5 +1,13 @@
 #!/bin/sh
 
+# A docker plugin is not started from the image configuration: docker gives it
+# the default path and nothing else, so the PATH and PYTHONPATH the Dockerfile
+# sets are missing. They are set again here, where they hold both for the
+# plugin and for a plain container.
+PATH="/app/bin:$PATH"
+PYTHONPATH=/app
+export PATH PYTHONPATH
+
 SSH_PORT=${SSH_PORT:-1122}
 
 # Ensure required directories exist in the mounted volume
