@@ -13,6 +13,11 @@ CHANGELOG
   for a plain container, and not for a ``runc exec`` into the running plugin,
   which is how the command is called by hand.
 
+  Since the install now writes where apk installs too, the Python packages come
+  from one place only: ``pytest`` and ``webtest`` are taken with the others
+  rather than from ``py3-pytest`` and ``py3-webtest``, which carried their own
+  copy of ``waitress`` next to the one buttervolume asks for.
+
 - The ssh server inside the plugin starts again. Alpine's sshd refuses to run
   unless ``/var/empty`` belongs to root, and that directory arrives owned by
   whoever unpacked the rootfs while building the plugin. The entrypoint gives

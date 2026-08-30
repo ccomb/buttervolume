@@ -1,5 +1,11 @@
+# Both stages have to carry the same interpreter: the build stage stages the
+# install under lib/pythonX.Y and the runtime copies it into /usr, where python
+# reads the directory named after its own version. Naming the base once is what
+# keeps the two equal, so an upgrade stays the one line it was.
+FROM alpine:3.22 AS base
+
 # Build stage - includes development tools
-FROM alpine:3.22 AS builder
+FROM base AS builder
 MAINTAINER Christophe Combelles. <ccomb@free.fr>
 
 RUN apk add --no-cache \
@@ -12,10 +18,10 @@ COPY buttervolume.zip /
 RUN mkdir -p /usr/src/buttervolume \
     && unzip -d /usr/src/buttervolume buttervolume.zip \
     && cd /usr/src/buttervolume \
-    && uv pip install --prefix /staging .
+    && uv pip install --prefix /staging '.[test]'
 
 # Runtime stage - minimal dependencies
-FROM alpine:3.22
+FROM base
 LABEL maintainer="Christophe Combelles <ccomb@free.fr>"
 
 # Install runtime dependencies and create directories in one layer
@@ -23,6 +29,9 @@ LABEL maintainer="Christophe Combelles <ccomb@free.fr>"
 # leaves its own smaller ones, so the copy on write flag is set by the same
 # tool as before
 # tini keeps sshd from leaving zombie processes behind
+# Python packages come from the build stage only, never from apk as well: the
+# copy below writes into the directory apk installs into, so a package owned by
+# both would end up half from one version and half from the other
 # No ssh host key is made here: the image is public, so a key baked into it
 # would be the same on every installation that pulls it. The entrypoint makes
 # them on the first start, in the directory that survives a restart
@@ -31,8 +40,6 @@ RUN apk add --no-cache \
         e2fsprogs-extra \
         ca-certificates \
         python3 \
-        py3-pytest \
-        py3-webtest \
         openssh \
         openssh-client \
         rsync \
