@@ -9,6 +9,11 @@ CHANGELOG
   not there and ``buttervolume`` was not found. The entrypoint sets them
   itself now, where they hold both for the plugin and for a plain container.
 
+- The ssh server inside the plugin starts again. Alpine's sshd refuses to run
+  unless ``/var/empty`` belongs to root, and that directory arrives owned by
+  whoever unpacked the rootfs while building the plugin. The entrypoint gives
+  it back to root.
+
 - The ssh server inside the plugin now makes its own host keys on the first
   start, in ``/var/lib/buttervolume/ssh/``, instead of carrying the ones built
   into the image.

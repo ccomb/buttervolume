@@ -17,6 +17,10 @@ mkdir -p /var/lib/buttervolume/config
 mkdir -p /var/lib/buttervolume/ssh
 
 chown -R root:root /root/
+# sshd refuses to start unless its privilege separation directory belongs to
+# root. The plugin rootfs is unpacked by whoever ran build.sh, so /var/empty
+# arrives owned by that user.
+chown root:root /var/empty
 sed -r "s/[#]{0,1}Port [0-9]{2,5}/Port $SSH_PORT/g" /etc/ssh/sshd_config -i
 
 # The ssh host keys live in /root/.ssh, which is the host's
