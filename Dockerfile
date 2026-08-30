@@ -12,7 +12,7 @@ COPY buttervolume.zip /
 RUN mkdir -p /usr/src/buttervolume \
     && unzip -d /usr/src/buttervolume buttervolume.zip \
     && cd /usr/src/buttervolume \
-    && uv pip install --target /app .
+    && uv pip install --prefix /staging .
 
 # Runtime stage - minimal dependencies
 FROM alpine:3.22
@@ -42,10 +42,13 @@ RUN apk add --no-cache \
     && mkdir -p /var/lib/buttervolume/snapshots \
     && mkdir -p /etc/buttervolume /root/.ssh
 
-# Copy the built application from builder stage
-COPY --from=builder /app /app
-ENV PYTHONPATH=/app
-ENV PATH="/app/bin:$PATH"
+# Copy the built application from the builder stage into the paths python and
+# the shell already look at. A docker plugin is not started from the image
+# configuration, so an install somewhere else would need a PATH and a
+# PYTHONPATH that only the entrypoint could set, and every "runc exec" into the
+# running plugin would miss them.
+COPY --from=builder /staging/bin /usr/bin
+COPY --from=builder /staging/lib /usr/lib
 
 COPY entrypoint.sh /
 ENTRYPOINT ["/entrypoint.sh"]

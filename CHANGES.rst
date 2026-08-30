@@ -4,10 +4,14 @@ CHANGELOG
 4.0 (unreleased)
 ****************
 
-- The plugin starts again. A docker plugin is not started from the image
-  configuration, so the ``PATH`` and ``PYTHONPATH`` the Dockerfile sets were
-  not there and ``buttervolume`` was not found. The entrypoint sets them
-  itself now, where they hold both for the plugin and for a plain container.
+- The plugin starts again, and the ``buttervolume`` command can be run inside
+  it. A docker plugin is not started from the image configuration, so the
+  ``PATH`` and ``PYTHONPATH`` the Dockerfile sets were not there and the
+  command was not found. The install now lands in ``/usr/bin`` and in the
+  interpreter's site-packages directory, where the shell and Python already
+  look, so nothing has to be set for it to be found: not for the plugin, not
+  for a plain container, and not for a ``runc exec`` into the running plugin,
+  which is how the command is called by hand.
 
 - The ssh server inside the plugin starts again. Alpine's sshd refuses to run
   unless ``/var/empty`` belongs to root, and that directory arrives owned by
@@ -45,9 +49,9 @@ CHANGELOG
   The entrypoint is plain sh instead of bash, which Alpine does not carry, and
   starts sshd directly since there is no ``service`` command.
 
-  The installed application no longer lands in the interpreter's site-packages
-  directory but in ``/app``, so the Dockerfile no longer writes a Python
-  version down anywhere and the next base system upgrade is one line.
+  The application is installed under a staging prefix in the build stage and
+  copied over ``/usr``, so the Dockerfile no longer writes a Python version
+  down anywhere and the next base system upgrade is one line.
 
   The image asks for ``e2fsprogs-extra`` by name, because busybox otherwise
   leaves its own smaller ``chattr`` and ``lsattr`` in place, and ``chattr`` is
