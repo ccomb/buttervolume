@@ -36,3 +36,23 @@ jobs:
       - run: ./test_local.sh
         env:
           BUTTERVOLUME_TEST_DIR: /mnt/btrfs/test
+
+  plugin-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Ten tests replicate over ssh, and the job above skips every one of
+      # them because ./test_local.sh says so. The plugin image carries an ssh
+      # server and its entrypoint already gives root a key to itself, so
+      # running the suite inside the image is what makes them run at all. It
+      # also runs them against the image we ship rather than against the
+      # runner.
+      - name: Run the suite inside the plugin image
+        run: |
+          set -o pipefail
+          ./test.sh 2>&1 | tee "$RUNNER_TEMP/plugin-test.log"
+          # nothing is skipped in that image today, so a skipped test means it
+          # could not give the suite what it needs, and the ssh tests would go
+          # missing again without a word
+          ! grep -q skipped "$RUNNER_TEMP/plugin-test.log"
