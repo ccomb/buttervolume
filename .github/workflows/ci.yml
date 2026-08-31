@@ -48,7 +48,22 @@ jobs:
       # running the suite inside the image is what makes them run at all. It
       # also runs them against the image we ship rather than against the
       # runner.
+      # The container makes its own BTRFS filesystem on a loop device when it
+      # does not find one, and the runner hands out no loop device, so it is
+      # given one from here, the way the job above does for itself.
+      - name: Mount a BTRFS filesystem for the tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y btrfs-progs
+          truncate -s 2G "$RUNNER_TEMP/btrfs.img"
+          mkfs.btrfs -q "$RUNNER_TEMP/btrfs.img"
+          sudo mkdir -p /mnt/btrfs
+          sudo mount -o loop "$RUNNER_TEMP/btrfs.img" /mnt/btrfs
+          sudo chown "$(id -un)" /mnt/btrfs
+
       - name: Run the suite inside the plugin image
+        env:
+          BUTTERVOLUME_TEST_DIR: /mnt/btrfs
         run: |
           set -o pipefail
           ./test.sh 2>&1 | tee "$RUNNER_TEMP/plugin-test.log"
