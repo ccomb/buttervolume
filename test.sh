@@ -16,8 +16,8 @@ if [ "$VERSION" == "" ]; then
     echo "Testing version $VERSION"
     echo "You can test another version with: ./test.sh <VERSION>"
     echo "#####################"
-    git archive -o buttervolume.zip $VERSION
 fi
+git archive -o buttervolume.zip $VERSION
 
 # Use cache for development (HEAD), clean build for specific versions
 if [ "$1" == "" ]; then
@@ -44,7 +44,7 @@ if [ -n "$BUTTERVOLUME_TEST_DIR" ]; then
     mkdir -p "$BUTTERVOLUME_TEST_DIR"/{volumes,snapshots,received}
     testdir="-v $BUTTERVOLUME_TEST_DIR:/var/lib/buttervolume"
 fi
-test="sudo docker run --rm --privileged $testdir -v /var/lib/docker:/var/lib/docker -v $PWD:/usr/src/buttervolume -w /usr/src/buttervolume ccomb/buttervolume_test:HEAD test"
+test="sudo docker run --rm --privileged $testdir -v /var/lib/docker:/var/lib/docker -v $PWD:/usr/src/buttervolume -w /usr/src/buttervolume ccomb/buttervolume_test:$VERSION test"
 $test
 echo "#############################"
 echo "You can run tests again with:"
