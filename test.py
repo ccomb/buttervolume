@@ -1692,6 +1692,77 @@ class TestCase(unittest.TestCase):
         self.assertTrue(any("replicate:backup_host" in msg for msg in log_capture.output))
         self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps)
 
+    def test_a_sync_refuses_a_volume_or_a_host_it_cannot_name(self):
+        """A name the sync cannot accept is named back, and nothing is pulled"""
+        with patch("buttervolume.btrfs.run_safe") as run_safe:
+            resp = jsonloads(
+                self.app.post(
+                    "/VolumeDriver.Volume.Sync",
+                    json.dumps(
+                        {
+                            "Volumes": ["../etc"],
+                            "Hosts": ["local host"],
+                            "Test": True,
+                        }
+                    ),
+                ).body
+            )
+        self.assertIn("../etc", resp["Err"])
+        self.assertIn("local host", resp["Err"])
+        run_safe.assert_not_called()
+
+    def test_a_host_that_could_not_be_pulled_from_is_named_in_the_answer(self):
+        """A host that refuses the pull stops neither the next host nor the answer"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        pulls = []
+
+        def pull(cmd, **kwargs):
+            pulls.append(cmd)
+            if cmd[-2].startswith("wronghost.mlf:"):
+                raise btrfs.BtrfsError("no route to host")
+            return ""
+
+        with patch("buttervolume.btrfs.run_safe", side_effect=pull):
+            resp = jsonloads(
+                self.app.post(
+                    "/VolumeDriver.Volume.Sync",
+                    json.dumps(
+                        {
+                            "Volumes": [name],
+                            "Hosts": ["wronghost.mlf", "localhost"],
+                            "Test": True,
+                        }
+                    ),
+                ).body
+            )
+        # every host was pulled from, in the order they were given
+        port = os.getenv("SSH_PORT", "1122")
+        self.assertEqual(
+            pulls,
+            [
+                [
+                    "rsync",
+                    "-v",
+                    "-r",
+                    "-a",
+                    "-z",
+                    "-h",
+                    "-P",
+                    "-e",
+                    f"ssh -p {port} -o StrictHostKeyChecking=no",
+                    f"{host}:{join(TEST_REMOTE_PATH, name)}/",
+                    join(VOLUMES_PATH, name),
+                ]
+                for host in ("wronghost.mlf", "localhost")
+            ],
+        )
+        # and only the one that failed is named, with what it said
+        self.assertIn("wronghost.mlf", resp["Err"])
+        self.assertIn("no route to host", resp["Err"])
+        self.assertNotIn("localhost", resp["Err"])
+        self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name}))
+
     @unittest.skipIf(
         os.environ.get("BUTTERVOLUME_LOCAL_TEST"), "SSH not available in local test mode"
     )
