@@ -667,6 +667,11 @@ The intent is to synchronize a volume between several hosts running
 containers, so you should schedule that action on each node, from all the
 other hosts.
 
+The local volume has to exist before it can be synchronized: a synchronization
+pulls files into a volume, it does not create one. Create it on the new host
+first, with ``docker volume create`` or by starting the container that uses
+it.
+
 A scheduled synchronization snapshots the volume before it pulls, and logs the
 name of that snapshot, so that a transfer stopped halfway can be recovered
 from. The one-shot ``buttervolume sync`` command does not: it writes straight

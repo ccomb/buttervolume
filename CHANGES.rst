@@ -4,6 +4,14 @@ CHANGELOG
 4.0 (unreleased)
 ****************
 
+- A synchronization of a volume that does not exist locally is refused
+  instead of creating one that cannot work. ``rsync`` creates the path it is
+  given, so a mistyped name left a plain directory among the subvolumes: the
+  volume list did not show it, no snapshot could be taken of it, and the
+  volume of that name could never be created afterwards, ``btrfs`` refusing a
+  subvolume where a directory already stood. Removing it meant deleting the
+  directory by hand.
+
 - The plugin starts again, and the ``buttervolume`` command can be run inside
   it. A docker plugin is not started from the image configuration, so the
   ``PATH`` and ``PYTHONPATH`` the Dockerfile sets were not there and the
