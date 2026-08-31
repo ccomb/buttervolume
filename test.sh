@@ -27,7 +27,7 @@ else
     echo "Clean build for version $VERSION"
     docker build --build-arg VERSION=$VERSION -t ccomb/buttervolume_test:$VERSION . --no-cache
 fi
-test="sudo docker run -it --rm --privileged -v /var/lib/docker:/var/lib/docker -v $PWD:/usr/src/buttervolume -w /usr/src/buttervolume ccomb/buttervolume_test:HEAD test"
+test="sudo docker run --rm --privileged -v /var/lib/docker:/var/lib/docker -v $PWD:/usr/src/buttervolume -w /usr/src/buttervolume ccomb/buttervolume_test:HEAD test"
 $test
 echo "#############################"
 echo "You can run tests again with:"
