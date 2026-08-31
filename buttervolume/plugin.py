@@ -415,10 +415,16 @@ def volume_sync(req):
     # Validate inputs
     for volume_name in volumes:
         try:
-            validate_volume_name(volume_name)
+            # rsync creates the path it is given, and what it would create
+            # here is a plain directory among the subvolumes: invisible to
+            # the list, impossible to snapshot, and standing in the way of
+            # the volume of that name ever being created. So the volume has
+            # to be there before anything is pulled into it.
+            existing_volume(volume_name)
         except ValidationError as e:
             errors.append(f"Invalid volume name {volume_name}: {str(e)}")
-            continue
+        except VolumeNotFoundError as e:
+            errors.append(str(e))
 
     for remote_host in remote_hosts:
         try:

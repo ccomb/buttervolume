@@ -1692,6 +1692,29 @@ class TestCase(unittest.TestCase):
         self.assertTrue(any("replicate:backup_host" in msg for msg in log_capture.output))
         self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps)
 
+    def test_a_sync_refuses_a_volume_that_is_not_there(self):
+        """Nothing is pulled into a name no volume answers to"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        with patch("buttervolume.btrfs.run_safe") as run_safe:
+            resp = jsonloads(
+                self.app.post(
+                    "/VolumeDriver.Volume.Sync",
+                    json.dumps(
+                        {
+                            "Volumes": [name],
+                            "Hosts": ["localhost"],
+                            "Test": True,
+                        }
+                    ),
+                ).body
+            )
+        self.assertIn("no such volume", resp["Err"])
+        run_safe.assert_not_called()
+        # rsync would have made a plain directory there, which the list cannot
+        # show, no snapshot can take, and the volume of that name would then
+        # never be created again
+        self.assertFalse(os.path.exists(join(VOLUMES_PATH, name)))
+
     def test_a_sync_refuses_a_volume_or_a_host_it_cannot_name(self):
         """A name the sync cannot accept is named back, and nothing is pulled"""
         with patch("buttervolume.btrfs.run_safe") as run_safe:
@@ -1716,8 +1739,13 @@ class TestCase(unittest.TestCase):
         name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
         self.create_a_volume_with_a_file(name)
         pulls = []
+        run_safe = btrfs.run_safe
 
         def pull(cmd, **kwargs):
+            # the route also asks btrfs whether the volume is there, and that
+            # question deserves its real answer
+            if cmd[0] != "rsync":
+                return run_safe(cmd, **kwargs)
             pulls.append(cmd)
             if cmd[-2].startswith("wronghost.mlf:"):
                 raise btrfs.BtrfsError("no route to host")
