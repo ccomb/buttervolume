@@ -441,6 +441,82 @@ class TestCase(unittest.TestCase):
         resp = jsonloads(self.app.post("/VolumeDriver.List", "{}").body)
         self.assertEqual(resp["Volumes"], [])
 
+    def schedule_of(self, name):
+        return [
+            line
+            for line in jsonloads(self.app.get("/VolumeDriver.Schedule.List").body)["Schedule"]
+            if line["Name"] == name
+        ]
+
+    def test_a_volume_created_with_an_action_as_option_has_it_scheduled(self):
+        """What Docker Swarm can say about a volume, on whatever host it lands"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        opts = {"Opts": {"replicate:localhost": "1", "purge:2h:1d": 60}}
+        resp = jsonloads(
+            self.app.post("/VolumeDriver.Create", json.dumps({"Name": name, **opts})).body
+        )
+        self.assertEqual(resp, {"Err": ""})
+        self.assertEqual(
+            self.schedule_of(name),
+            [
+                {"Name": name, "Action": "replicate:localhost", "Timer": "1", "Active": "True"},
+                {"Name": name, "Action": "purge:2h:1d", "Timer": "60", "Active": "True"},
+            ],
+        )
+        # somebody pauses the line, and the service is deployed again onto
+        # this host, which still has the volume: the line is left as it is
+        self.app.post(
+            "/VolumeDriver.Schedule",
+            json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": "pause"}),
+        )
+        resp = jsonloads(
+            self.app.post("/VolumeDriver.Create", json.dumps({"Name": name, **opts})).body
+        )
+        self.assertEqual(resp, {"Err": ""})
+        self.assertEqual(self.schedule_of(name)[0]["Active"], "False")
+        self.assertEqual(len(self.schedule_of(name)), 2)
+        # and one deleted comes back, since the options still ask for it
+        self.app.post(
+            "/VolumeDriver.Schedule",
+            json.dumps({"Name": name, "Action": "purge:2h:1d", "Timer": 0}),
+        )
+        self.app.post("/VolumeDriver.Create", json.dumps({"Name": name, **opts}))
+        self.assertEqual(
+            [line["Action"] for line in self.schedule_of(name)],
+            ["replicate:localhost", "purge:2h:1d"],
+        )
+
+    def test_an_option_nobody_reads_is_refused_before_anything_is_created(self):
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        for opts in (
+            {"replicat:localhost": "1"},
+            {"replicate:localhost": "soon"},
+            {"nocopy": "true"},
+        ):
+            resp = jsonloads(
+                self.app.post("/VolumeDriver.Create", json.dumps({"Name": name, "Opts": opts})).body
+            )
+            self.assertTrue(resp["Err"], opts)
+            self.assertFalse(os.path.exists(join(VOLUMES_PATH, name)), opts)
+        self.assertEqual(self.schedule_of(name), [])
+
+    def test_a_paused_schedule_refuses_a_volume_that_asks_for_a_line(self):
+        """Creating it with nothing scheduled and nothing said is the one thing not to do"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        with patch("buttervolume.plugin.SCHEDULE_DISABLED", SCHEDULE + ".disabled"):
+            self.app.post("/VolumeDriver.Schedule.Pause")
+            try:
+                resp = jsonloads(
+                    self.app.post(
+                        "/VolumeDriver.Create",
+                        json.dumps({"Name": name, "Opts": {"replicate:localhost": "1"}}),
+                    ).body
+                )
+            finally:
+                self.app.post("/VolumeDriver.Schedule.Resume")
+        self.assertIn("globally paused", resp["Err"])
+        self.assertFalse(os.path.exists(join(VOLUMES_PATH, name)))
+
     def test_enabled_cow(self):
         """Check that cow is enabled by default"""
         # create a volume with a file

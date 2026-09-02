@@ -411,6 +411,32 @@ When you delete the volume with ``docker rm -v <container>`` or ``docker volume
 rm <volume>``, the BTRFS subvolume is deleted. If you snapshotted the volume
 elsewhere in the meantime, the snapshots won't be deleted.
 
+A volume can ask for its scheduled jobs as it is created: an option named
+after an action, with a number of minutes as its value, writes that line in
+the schedule of the host the volume is created on::
+
+    docker volume create -d ccomb/buttervolume -o replicate:node2=1 -o purge:4h:1d:1w=60 db
+
+The line is written when no line says the same thing, and left alone when
+one does, paused or not, so creating the volume again changes nothing. It is
+never removed on its own. That is how a Docker Swarm service says, once, what
+happens to its volume on whatever host it lands on::
+
+    docker service create --mount type=volume,source=db,target=/data,volume-driver=ccomb/buttervolume,volume-opt=replicate:node2=1 ...
+
+In a compose file, the same goes under ``driver_opts``, with the value
+written as a string::
+
+    volumes:
+      db:
+        driver: ccomb/buttervolume
+        driver_opts:
+          "replicate:node2": "1"
+
+An option that is neither ``copyonwrite``, ``compression`` nor an action is
+refused, and the volume is not created: an option nobody read would leave
+the replication unscheduled and nothing said.
+
 
 Managing volumes and snapshots
 ------------------------------
@@ -654,6 +680,12 @@ host the application can run on, with the same line scheduled on each of
 them::
 
     buttervolume schedule replicate:node2 1 db
+
+or, with Docker Swarm, asked for by the volume itself, so that the line is
+written on whatever host the service lands on (see `Creating and deleting
+volumes`_)::
+
+    docker service create --mount type=volume,source=db,target=/data,volume-driver=ccomb/buttervolume,volume-opt=replicate:node2=1 ...
 
 The application runs on ``host1``, which sends a snapshot to ``node2`` every
 minute the volume changed. Stop it there and start it on ``host2``, by hand or

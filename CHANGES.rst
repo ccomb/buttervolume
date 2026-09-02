@@ -12,6 +12,17 @@ CHANGELOG
   subvolume where a directory already stood. Removing it meant deleting the
   directory by hand.
 
+- A volume can ask for its scheduled jobs as it is created. An option named
+  after an action, ``-o replicate:node2=1``, writes that line in the
+  schedule of the host the volume is created on, when no line says the same
+  thing already; a line already there is left alone, paused or not, and none
+  is removed on its own. This is how a Docker Swarm service, with
+  ``volume-opt=replicate:node2=1``, says once what happens to its volume on
+  whatever host it lands on, including a host that kept the volume from an
+  earlier deployment. An option that is neither ``copyonwrite``,
+  ``compression`` nor an action is now refused, where it was ignored: an
+  option nobody read would leave a replication unscheduled and nothing said.
+
 - A replicated volume now follows its container from one host to the other.
   On a volume with a ``replicate:<host>`` line scheduled, the first mount
   asks that host for the last snapshot of the volume to appear there,

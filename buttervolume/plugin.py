@@ -328,15 +328,89 @@ def plugin_activate(_):
     return {"Implements": ["VolumeDriver"]}
 
 
+VOLUME_OPTIONS = ("copyonwrite", "compression")
+
+
+def is_a_timer(text):
+    """Whether this names a number of minutes a job waits between two runs.
+
+    isdecimal, not isnumeric: "²".isnumeric() is True and int("²") raises,
+    and the scheduler reads this timer back with int().
+    """
+    return text.isdecimal() and int(text) > 0
+
+
+def jobs_in_options(opts):
+    """The jobs the options of a volume ask to schedule, as (action, timer) pairs.
+
+    Pure. An option named after an action, ``replicate:node2`` with a number
+    of minutes as its value, is a line to write in the schedule. An option
+    that is neither that nor one of the volume's own is refused: one nobody
+    reads would leave a replication unscheduled, and nothing said.
+    """
+    jobs = []
+    for key, value in opts.items():
+        if key in VOLUME_OPTIONS:
+            continue
+        try:
+            Job.parse(key)
+        except ValidationError as e:
+            raise ValidationError(
+                f"Unknown option '{key}'. Options are {', '.join(VOLUME_OPTIONS)}, or an action "
+                f"to schedule on the volume with a number of minutes as its value: {e}"
+            ) from e
+        timer = str(value)
+        if not is_a_timer(timer):
+            raise ValidationError(
+                f"Invalid value '{value}' for option '{key}': it must be a number of minutes"
+            )
+        jobs.append((key, timer))
+    return jobs
+
+
+def refuse_if_paused(name, jobs):
+    """A paused schedule takes no line, and says so before a volume is created."""
+    if jobs and os.path.exists(SCHEDULE_DISABLED):
+        raise ValidationError(
+            f"Schedule is globally paused, so nothing can be scheduled on {name}: resume it first"
+        )
+
+
+def schedule_lines(name, jobs):
+    """Write these jobs of this volume in the schedule, leaving alone the lines already there.
+
+    A line already written keeps its timer and stays paused if it is: the
+    options of a volume say what to schedule when nothing is, and pausing a
+    line is somebody's decision.
+    """
+    if not jobs:
+        return
+    refuse_if_paused(name, jobs)
+    if not os.path.exists(SCHEDULE):
+        os.makedirs(dirname(SCHEDULE), exist_ok=True)
+        with open(SCHEDULE, "w") as f:
+            f.write("")
+    schedule = {(entry.name, entry.action): entry for entry in read_schedule(SCHEDULE)}
+    for action, timer in jobs:
+        if (name, action) not in schedule:
+            schedule[(name, action)] = Entry(name, action, timer, "True")
+            log.info("Scheduled %s of %s every %s minutes, as its options ask", action, name, timer)
+    write_schedule(SCHEDULE, schedule.values())
+
+
 @route("/VolumeDriver.Create")
 def volume_create(req):
+    """Create a volume, and schedule what its options ask for.
+
+    The options are read before anything is created, so a bad one leaves
+    nothing behind, and the jobs they ask for are scheduled whether the
+    volume is created or already there: a service that Docker Swarm deploys
+    again onto a host that kept the volume has to find its replication
+    scheduled all the same.
+    """
     name = req["Name"]
     opts = req.get("Opts", {}) or {}
-
     volpath = volumepath(name)
-    # volume already exists?
-    if name in [v["Name"] for v in list_volumes()["Volumes"]]:
-        return {"Err": ""}
 
     cow = opts.get("copyonwrite", "true").lower()
     if cow not in ["true", "false"]:
@@ -348,6 +422,13 @@ def volume_create(req):
         return {
             "Err": f"Invalid option for compression: {compression}. Valid options: {', '.join(valid_compression[1:])}"
         }
+    jobs = jobs_in_options(opts)
+    refuse_if_paused(name, jobs)
+
+    # volume already exists?
+    if name in [v["Name"] for v in list_volumes()["Volumes"]]:
+        schedule_lines(name, jobs)
+        return {"Err": ""}
 
     btrfs.Subvolume(volpath).create(cow=cow == "true")
 
@@ -360,6 +441,7 @@ def volume_create(req):
             log.warning(f"Could not enable compression for volume {name}: {e}")
             # Don't fail volume creation if compression setting fails
 
+    schedule_lines(name, jobs)
     return {"Err": ""}
 
 
@@ -1053,9 +1135,7 @@ def schedule(req):
             schedule[(name, action)] = replace(schedule[(name, action)], active="True")
         else:
             del schedule[(name, action)]
-    elif timer.isdecimal() and int(timer) > 0:
-        # isdecimal, not isnumeric: "²".isnumeric() is True and int("²")
-        # raises, and the scheduler reads this timer back with int()
+    elif is_a_timer(timer):
         validate_volume_name(name)
         Job.parse(action)
         schedule[(name, action)] = Entry(name, action, timer, "True")
