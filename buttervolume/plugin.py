@@ -54,6 +54,7 @@ from buttervolume.names import (
     parsed,
     sent_snapshots,
     snapshot_to_fetch,
+    snapshot_to_restore,
     snapshots_of,
     taken_snapshots,
     validate_hostname,
@@ -61,7 +62,7 @@ from buttervolume.names import (
     validate_volume_name,
 )
 from buttervolume.purge import Pattern, compute_purges
-from buttervolume.schedule import Entry, Job, read_schedule, write_schedule
+from buttervolume.schedule import Entry, Job, Replicate, read_schedule, write_schedule
 
 log = logging.getLogger()
 
@@ -364,7 +365,19 @@ def volume_create(req):
 
 @route("/VolumeDriver.Mount")
 def volume_mount(req):
-    return {"Mountpoint": existing_volume(req["Name"]).path, "Err": ""}
+    """Give the path of the volume, brought first to what the other hosts hold.
+
+    Only the first mount does that, and only for a volume with a replication
+    scheduled. A mount that fails leaves the count where it was: Docker will
+    not call Unmount for a container it did not start.
+    """
+    name = req["Name"]
+    volume = existing_volume(name)
+    with mount_lock(name):
+        if not mounted.get(name):
+            take_over(name, req.get("Test", False))
+        mounted[name] = mounted.get(name, 0) + 1
+    return {"Mountpoint": volume.path, "Err": ""}
 
 
 @route("/VolumeDriver.Path")
@@ -373,7 +386,13 @@ def volume_path(req):
 
 
 @route("/VolumeDriver.Unmount")
-def volume_unmount(_):
+def volume_unmount(req):
+    """Send the final state of the volume to the other hosts, once its last container stopped."""
+    name = req["Name"]
+    with mount_lock(name):
+        mounted[name] = max(0, mounted.get(name, 0) - 1)
+        if not mounted[name]:
+            hand_over(name, req.get("Test", False))
     return {"Err": ""}
 
 
@@ -385,7 +404,13 @@ def volume_get(req):
 
 @route("/VolumeDriver.Remove")
 def volume_remove(req):
-    existing_volume(req["Name"]).delete()
+    name = req["Name"]
+    existing_volume(name).delete()
+    # Docker removes no volume a container uses, so the count is what a
+    # restart left behind, and the volume recreated under this name starts
+    # from nothing
+    with mount_lock(name):
+        mounted.pop(name, None)
     return {"Err": ""}
 
 
@@ -501,14 +526,25 @@ def keep_trace(snapshot, remote_host):
             log.warning("Failed to delete old snapshot %s: %s", str(old), str(e))
 
 
-def knows(snapshot, remote_host):
-    """Whether this host holds this snapshot, or the trace of exchanging it with that host.
+def continues(volume_name, snapshot, remote_host):
+    """Whether a send from this volume continues the history that snapshot belongs to.
 
-    The trace is a snapshot of it, so a snapshot purged here after being sent
-    is still a snapshot this host has seen.
+    It does when the snapshot was taken from this volume, when the volume was
+    made from it by a restore, or when this host is the one that sent it there:
+    the trace of that send is a snapshot taken here, where the trace left by
+    a receive carries the mark of the subvolume it was received from. What
+    the volume holds is then the continuation of what that host holds. A
+    snapshot fetched from that host and never restored is none of these: the
+    volume here is another history, and sending it would bury that one.
     """
-    held = os.listdir(SNAPSHOTS_PATH)
-    return str(snapshot) in held or str(snapshot.sent_to(remote_host)) in held
+    volume = existing_volume(volume_name).show()
+    path = snapshotpath(str(snapshot))
+    if os.path.exists(path):
+        shown = btrfs.Subvolume(path).show()
+        if shown["Parent UUID"] == volume["UUID"] or volume["Parent UUID"] == shown["UUID"]:
+            return True
+    trace = snapshotpath(str(snapshot.sent_to(remote_host)))
+    return os.path.exists(trace) and btrfs.Subvolume(trace).show()["Received UUID"] == "-"
 
 
 @route("/VolumeDriver.Snapshot.Send")
@@ -553,16 +589,17 @@ def send_snapshot(snapshot_name, remote_host, test=False):
     port = os.getenv("SSH_PORT", "1122")
 
     # the last snapshot of this volume that appeared over there has to be one
-    # this host knows, or the volume over there has moved on without this
-    # host: another host sent it, or somebody restored it there. Sending over
-    # that would make this host's copy pass for the most recent one everywhere
-    # and bury the other history under it, so it is refused, and said. A host
-    # that holds nothing of the volume lets the first send through, and a
-    # volume at rest never gets here, so nothing is asked of a host at rest.
+    # this volume continues, or the volume over there has moved on without
+    # this host: another host sent it, or somebody restored it there. Sending
+    # over that would make this host's copy pass for the most recent one
+    # everywhere and bury the other history under it, so it is refused, and
+    # said. A host that holds nothing of the volume lets the first send
+    # through, and a volume at rest never gets here, so nothing is asked of a
+    # host at rest.
     arrived = taken_snapshots(
         snapshot.volume, snapshots_on_remote(remote_host, remote_snapshots, port)
     )
-    if arrived and not knows(arrived[-1], remote_host):
+    if arrived and not continues(snapshot.volume, arrived[-1], remote_host):
         raise ReplicationError(
             f"{remote_host} holds {arrived[-1]}, which this host never saw: the volume "
             f"there has moved on. Receive it first with `buttervolume receive {remote_host} "
@@ -609,13 +646,31 @@ def send_snapshot(snapshot_name, remote_host, test=False):
 # final state, after whatever was under way. The locks live in memory alone,
 # and that is right: a daemon that stops has no replication under way either.
 replications = {}
-replications_lock = threading.Lock()
+# Docker calls Mount once per container that uses a volume and Unmount once per
+# container that stops, so a volume shared by two containers is mounted twice.
+# This counts them: the first mount and the last unmount are the two moments a
+# replicated volume changes hands, and nothing in between is. A restarted
+# plugin counts from zero again, and that costs, at worst, a replication at
+# the stop of a container that was not the last one, which sends a coherent
+# state a minute early, and a mount that asks the other hosts while a
+# container runs here, which finds nothing newer there.
+mounted = {}
+mounts = {}
+locks_lock = threading.Lock()
+
+
+def lock_of(table, name):
+    """The lock of this volume in this table, made on first use."""
+    with locks_lock:
+        return table.setdefault(name, threading.Lock())
 
 
 def replication_lock(name):
-    """The lock of this volume's replications, made on first use."""
-    with replications_lock:
-        return replications.setdefault(name, threading.Lock())
+    return lock_of(replications, name)
+
+
+def mount_lock(name):
+    return lock_of(mounts, name)
 
 
 def replicate(name, remote_host, test=False, wait=False):
@@ -651,9 +706,103 @@ def replicate(name, remote_host, test=False, wait=False):
 
 @route("/VolumeDriver.Replicate")
 def volume_replicate(req):
-    """Snapshot a volume and send the snapshot to another host, as one step."""
-    snapshot = replicate(req["Name"], req["Host"], req.get("Test", False))
-    return {"Err": "", "Snapshot": snapshot}
+    """Snapshot a volume and send the snapshot to another host, as one step.
+
+    On a host where no container uses the volume, what the other host holds
+    is fetched first. It is worth having before a container asks for the
+    volume here: the mount then has a difference to receive rather than a
+    whole volume, within the time Docker gives it. Nothing is restored here;
+    which snapshot becomes the volume is decided at the mount, and only then.
+    """
+    name, remote_host, test = req["Name"], req["Host"], req.get("Test", False)
+    with mount_lock(name):
+        idle = not mounted.get(name)
+    if idle:
+        fetch(name, remote_host, test)
+    return {"Err": "", "Snapshot": replicate(name, remote_host, test)}
+
+
+def replication_hosts(name):
+    """The hosts this volume is replicated to, read from the lines of the schedule that run.
+
+    A paused line, and a paused schedule, name no host. Pausing is how a
+    volume is mounted without asking a host that is down, and unmounted
+    without sending to it.
+    """
+    if not os.path.exists(SCHEDULE):
+        return []
+    hosts = []
+    for entry in read_schedule(SCHEDULE):
+        if entry.name != name or not entry.enabled:
+            continue
+        try:
+            job = Job.parse(entry.action)
+        except ValidationError:
+            continue
+        if isinstance(job, Replicate):
+            hosts.append(job.host)
+    return hosts
+
+
+def take_over(name, test=False):
+    """Bring a replicated volume to what the other hosts hold, before its first container starts.
+
+    Each host the volume is replicated to is asked for the last snapshot of
+    it that appeared there, and that one is received when it is not here. The
+    volume is then brought to the last snapshot that came from another host,
+    when it is the last to have appeared here: a snapshot taken here since is
+    the volume's own history going on. An empty volume takes what the hosts
+    hold. A host that does not answer stops the mount, and the error says how
+    to mount without asking: acting on "there is nothing over there" when
+    nobody said so is how the good copy of a volume gets replaced by an older
+    one, and here the application would then write on top of it.
+    """
+    hosts = replication_hosts(name)
+    if not hosts:
+        return
+    candidates = []
+    for host in hosts:
+        try:
+            fetched = fetch(name, host, test)
+        except ReplicationError as e:
+            raise ReplicationError(
+                f"Not mounting {name} without knowing what {host} holds: {e}. To mount it "
+                f"anyway, pause its replication: buttervolume schedule replicate:{host} pause {name}"
+            ) from e
+        if fetched:
+            candidates.append(fetched)
+    # read with stat rather than listed: listing a directory updates its
+    # access time, which the restore would take for a change. BTRFS keeps the
+    # size of a directory as twice the length of the names in it, so zero is
+    # empty.
+    empty = os.stat(volumepath(name)).st_size == 0
+    target = snapshot_to_restore(empty, snapshots_here(name), candidates)
+    if target:
+        log.info("Bringing %s to %s before it is mounted", name, target)
+        restore(target, name)
+
+
+def hand_over(name, test=False):
+    """Send the final state of a replicated volume to the other hosts, once its last container stopped.
+
+    A replication under way, from a scheduled round, is waited for: what has
+    to go is the state after it. A host that cannot be reached is reported and
+    the others are still sent to; the scheduled replication sends the state
+    to it at its next round, when it is back.
+    """
+    errors = []
+    for host in replication_hosts(name):
+        try:
+            snapshot = replicate(name, host, test, wait=True)
+            log.info("Sent the final state of %s to %s as %s", name, host, snapshot)
+        except Exception as e:
+            log.error("Could not send the final state of %s to %s: %s", name, host, e)
+            errors.append(f"{host}: {e}")
+    if errors:
+        raise ReplicationError(
+            f"The final state of {name} could not be sent to {'; '.join(errors)}. "
+            "The scheduled replication will send it at its next round"
+        )
 
 
 # One receive at a time. A `btrfs receive` that stops early leaves behind what
@@ -696,11 +845,19 @@ def receive_or_clean(remote_host, remote_snapshot_path, path, remote_parent_path
 
 @route("/VolumeDriver.Snapshot.Receive")
 def snapshot_receive(req):
-    """Fetch from another host the most recent snapshot it has of a volume"""
-    test = req.get("Test", False)
-    volume = req["Name"]
-    remote_host = req["Host"]
+    """Fetch from another host the last snapshot of a volume that appeared there"""
+    snapshot = fetch(req["Name"], req["Host"], req.get("Test", False))
+    if not snapshot:
+        raise SnapshotNotFoundError(f"{req['Host']} keeps no snapshot of volume '{req['Name']}'")
+    return {"Err": "", "Snapshot": snapshot}
 
+
+def fetch(volume, remote_host, test=False):
+    """Fetch the last snapshot of this volume that appeared on that host, and name it.
+
+    None when that host answered that it keeps no snapshot of the volume. A
+    host that does not answer raises: it is never read as a host with nothing.
+    """
     validate_volume_name(volume)
     validate_hostname(remote_host)
     remote_snapshots = SNAPSHOTS_PATH if not test else TEST_REMOTE_PATH
@@ -715,7 +872,7 @@ def snapshot_receive(req):
             os.listdir(SNAPSHOTS_PATH),
         )
         if not found:
-            raise SnapshotNotFoundError(f"{remote_host} keeps no snapshot of volume '{volume}'")
+            return None
         snapshot, parent = found
         path = snapshotpath(str(snapshot))
 
@@ -732,7 +889,7 @@ def snapshot_receive(req):
                 )
             log.info("Snapshot %s is already here, nothing to receive", snapshot)
             keep_trace(snapshot, remote_host)
-            return {"Err": "", "Snapshot": str(snapshot)}
+            return str(snapshot)
 
         remote_path = join(remote_snapshots, str(snapshot))
         parent_path = join(remote_snapshots, str(parent)) if parent else None
@@ -754,7 +911,7 @@ def snapshot_receive(req):
         # that host holds this snapshot, we have just read it there. Without
         # this trace the first send back would carry the whole volume again.
         keep_trace(snapshot, remote_host)
-        return {"Err": "", "Snapshot": str(snapshot)}
+        return str(snapshot)
 
 
 # One snapshot at a time. The endpoint below takes a copy, compares it with the
@@ -767,22 +924,29 @@ def snapshot_receive(req):
 snapshotting = threading.Lock()
 
 
-def snapshots_taken_here(volume_name):
-    """The snapshots taken of this volume on this host, in the order they were taken.
+def snapshots_here(volume_name):
+    """The snapshots of this volume on this host, in the order they appeared, with their origin.
 
-    Left out: the traces of the sends, whose content is that of their own
-    snapshot but which the next send would refuse if named; and the snapshots
-    received from another host, which were never taken of this volume, so
-    nothing says how the volume compares to them. The order is the one BTRFS
+    Pairs of the name and whether it came from another host. The traces of
+    the sends are left out: their content is that of their own snapshot, but
+    the next send would refuse one if named. The order is the one BTRFS
     created them in, not the one the dates in their names spell.
     """
     return [
-        listed.name
+        (listed.name, listed.received)
         for listed in btrfs.subvolumes_in(SNAPSHOTS_PATH)
-        if not listed.received
         for s in parsed([listed.name])
         if s.volume == volume_name and not s.host
     ]
+
+
+def snapshots_taken_here(volume_name):
+    """The snapshots taken of this volume on this host, in the order they were taken.
+
+    The snapshots received from another host are left out: they were never
+    taken of this volume, so nothing says how the volume compares to them.
+    """
+    return [name for name, received in snapshots_here(volume_name) if not received]
 
 
 def take_snapshot(name):

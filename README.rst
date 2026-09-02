@@ -546,8 +546,11 @@ to the volume.
 **One host writes at a time: replicate.** This is the failover case, and the
 "move this application to another node" case. It works with any data,
 including a database, because a BTRFS snapshot is a coherent image of the
-whole volume at one instant. What replication cannot do is merge: two hosts
-replicating to each other and restoring would each throw away the work of the
+whole volume at one instant. A replicated volume follows its container: the
+host a container starts on takes what the other hosts hold, and the host it
+stops on sends what it wrote (see `Move an application between hosts`_). What
+replication cannot do is merge: two hosts writing to the same volume at the
+same time and replicating to each other would each throw away the work of the
 other, and the last one to speak would win.
 
 **Several hosts write at the same time: synchronize.** Each host pulls from
@@ -643,6 +646,82 @@ The default SSH_PORT of the ssh server included in the plugin is **1122**. You c
 change it with `docker plugin set ccomb/buttervolume SSH_PORT=<PORT>` before
 enabling the plugin.
 
+Move an application between hosts
+---------------------------------
+
+Say the volume ``db`` of an application is replicated to ``node2`` from every
+host the application can run on, with the same line scheduled on each of
+them::
+
+    buttervolume schedule replicate:node2 1 db
+
+The application runs on ``host1``, which sends a snapshot to ``node2`` every
+minute the volume changed. Stop it there and start it on ``host2``, by hand or
+because Docker Swarm moved it, and the volume follows:
+
+- when the last container using ``db`` stops on ``host1``, the volume is
+  snapshotted and that snapshot sent to ``node2``, right then, before Docker
+  goes on. A replication under way from the scheduled round is waited for, so
+  what leaves is the final state;
+- when the first container using ``db`` starts on ``host2``, ``node2`` is asked
+  for the last snapshot of ``db`` that appeared there, it is received when it
+  is not here already, and it becomes the volume. What the volume held on
+  ``host2`` is kept as a snapshot first, unless a snapshot already holds
+  exactly that, or the volume was empty, which is what a volume Docker just
+  created is. The volume being no longer empty, Docker does not copy the
+  content of the image into it.
+
+The volume is brought to the last snapshot that appeared on this host **when
+that one came from another host**. A snapshot taken here since, by a
+scheduled snapshot or by the stop of a container, means the volume's own
+history goes on, and nothing is restored: a container that restarts on the
+same host, and a host that reboots without stopping its containers, keep
+what they wrote. "Last" is read from the order BTRFS created the snapshots
+in, never from the dates in their names, so the clocks of the hosts do not
+decide which copy is the most recent one.
+
+A host that does not answer when a container starts **refuses the mount**,
+and Docker reports the error. Mounting on "there is nothing over there" when
+nobody said so would start the application on whatever this host holds,
+possibly the state of a week ago, and its writes would then bury the work
+done elsewhere. To start the application anyway, pause the replication on
+that host; the mount then asks nobody::
+
+    buttervolume schedule replicate:node2 pause db
+
+A host that does not answer when a container stops leaves the snapshot here,
+and the scheduled replication sends it when the host is back. Docker reports
+the error and stops the container anyway.
+
+The other side of the same rule is the send. A host that crashed with writes
+it never sent comes back with another history of the volume, older than what
+``node2`` received from the host the application moved to. Its scheduled
+replication is refused, and says so at every round, until a container starts
+there again: the mount then brings the work done elsewhere in, and keeps the
+unsent writes as a snapshot, named in the log. A rounds' send is also refused
+after somebody restored an older snapshot on ``node2`` by hand; the error
+names the snapshot to receive first, or to delete over there.
+
+While no container uses the volume on a host, each scheduled round fetches
+from ``node2`` what appeared there since, without restoring it, so that a
+mount has a difference to receive and not a whole volume. That matters
+because Docker gives a plugin thirty seconds to answer a mount, and the
+first container of a volume this host has never seen receives the whole
+volume. Either give Docker more patience::
+
+    docker plugin install --disable ccomb/buttervolume
+    docker plugin enable --timeout 600 ccomb/buttervolume
+
+or create the volume with its replication scheduled ahead of the container,
+and let a round go by.
+
+Docker calls the plugin once per container, so a volume shared by two
+containers on the same host changes hands at the first start and at the last
+stop only. The plugin counts them in memory: after it restarts, the next
+container to stop replicates the volume even when another one still runs,
+which sends a coherent state a minute early and harms nothing.
+
+
 Receive a snapshot from another host
 ------------------------------------
 
@@ -662,6 +741,10 @@ which snapshot becomes the volume stays a separate, explicit decision::
 
     buttervolume receive node2 www
     buttervolume restore www
+
+On a host where the volume is replicated to ``node2``, that decision is taken
+by the next mount, which restores the last snapshot to have appeared here when
+it came from another host (see `Move an application between hosts`_).
 
 A host that keeps no snapshot of that volume and a host that could not answer
 are two different answers, and never the same one. An unreachable host, a

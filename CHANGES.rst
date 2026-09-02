@@ -12,6 +12,33 @@ CHANGELOG
   subvolume where a directory already stood. Removing it meant deleting the
   directory by hand.
 
+- A replicated volume now follows its container from one host to the other.
+  On a volume with a ``replicate:<host>`` line scheduled, the first mount
+  asks that host for the last snapshot of the volume to appear there,
+  receives it, and restores it when it is the last to have appeared here and
+  came from another host; the last unmount snapshots the volume and sends
+  that snapshot. What the volume held is kept as a snapshot first. A host
+  that does not answer at mount refuses the mount, and pausing the line is
+  how to mount without asking. The README section "Move an application
+  between hosts" says the rest: what a crash keeps aside, why the clocks of
+  the hosts do not decide, and the thirty seconds Docker gives a mount.
+
+  **Every** ``replicate:<host>`` **line already in** ``schedule.csv`` **changes
+  meaning with this version**: the volumes it names start being brought to
+  what that host holds when a container starts, and sent to it when the
+  last one stops, and a replication host that is down keeps their
+  containers from starting. Pause the line, or delete it, for a volume that
+  must not.
+
+  While no container uses a volume here, each scheduled round of its
+  replication also fetches from the other host what appeared there since,
+  without restoring it, so that a mount receives a difference and not a
+  whole volume.
+
+  The scheduler's replication lock moves into the plugin, where the unmount
+  needs it too: a round finding a replication under way skips its turn as
+  before, where an unmount waits for it and then sends the final state.
+
 - ``buttervolume replicate <host> <volume>`` snapshots a volume and sends that
   snapshot in one step, which is what a scheduled replication does at each
   round, and what moving an application by hand needed as two commands. The

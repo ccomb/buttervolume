@@ -195,6 +195,31 @@ def taken_snapshots(volume, names):
     ]
 
 
+def snapshot_to_restore(empty, events, candidates):
+    """Which snapshot a replicated volume is brought to before its first container starts.
+
+    Pure. ``events`` are the snapshots of the volume as they appeared on this
+    host, oldest first, each as ``(name, came_from_another_host)``;
+    ``candidates`` are the names the hosts the volume is replicated to hold as
+    their last, already fetched. The answer is a name, or None when the volume
+    is what it should be.
+
+    An empty volume, the one Docker just created or recreated, takes the last
+    candidate to have appeared here, and the last snapshot when the hosts hold
+    nothing. Any other volume is brought to the last snapshot to have appeared
+    here when that one came from another host: another host wrote since this
+    one did. When the last one was taken here, the volume's own history goes
+    on, whatever the dates in the names say, and whatever was received before.
+    """
+    if not events:
+        return None
+    if empty:
+        arrived = [name for name, _ in events if name in set(candidates)]
+        return arrived[-1] if arrived else events[-1][0]
+    name, from_elsewhere = events[-1]
+    return name if from_elsewhere else None
+
+
 def snapshot_to_fetch(volume, remote_names, local_names):
     """What to ask that host for, and the parent both sides already hold.
 

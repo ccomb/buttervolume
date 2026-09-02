@@ -40,6 +40,7 @@ from buttervolume.names import (
     new_snapshot,
     sent_snapshots,
     snapshot_to_fetch,
+    snapshot_to_restore,
     snapshots_of,
 )
 from buttervolume.purge import Pattern, compute_purges
@@ -191,7 +192,9 @@ class TestCase(unittest.TestCase):
         def slow_send(*args, **kwargs):
             time.sleep(2)
 
-        with patch("buttervolume.plugin.send_snapshot") as mock_send:
+        with patch("buttervolume.plugin.snapshots_on_remote", return_value=[]), patch(
+            "buttervolume.plugin.send_snapshot"
+        ) as mock_send:
             mock_send.side_effect = slow_send
             # run the scheduler in a separate thread
             t = threading.Thread(
@@ -281,7 +284,9 @@ class TestCase(unittest.TestCase):
             "/VolumeDriver.Schedule",
             json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 1}),
         )
-        with patch("buttervolume.plugin.send_snapshot") as mock_send:
+        with patch("buttervolume.plugin.snapshots_on_remote", return_value=[]), patch(
+            "buttervolume.plugin.send_snapshot"
+        ) as mock_send:
             mock_send.side_effect = Exception("replication failed")
             runjobs(SCHEDULE, True, last_runs=LAST_RUNS)
         mock_send.assert_called_once()
@@ -304,7 +309,9 @@ class TestCase(unittest.TestCase):
             "/VolumeDriver.Schedule",
             json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 1}),
         )
-        with patch("buttervolume.plugin.send_snapshot") as mock_send:
+        with patch("buttervolume.plugin.snapshots_on_remote", return_value=[]), patch(
+            "buttervolume.plugin.send_snapshot"
+        ) as mock_send:
             # what fills the Err field of the answer
             mock_send.side_effect = plugin.ReplicationError("the remote host refused")
             with self.assertLogs(level=logging.INFO) as log_capture:
@@ -663,9 +670,11 @@ class TestCase(unittest.TestCase):
             json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 1}),
         )
         runjobs(SCHEDULE, True, last_runs=LAST_RUNS)
+        # no container uses the volume here, so the round fetched the other
+        # host's work first, whose trace replaced the trace of the second send
         self.assertEqual(
             sorted(s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")),
-            sorted([first, second, third, f"{second}@localhost"]),
+            sorted([first, second, third, foreign, f"{foreign}@localhost"]),
         )
         self.app.post(
             "/VolumeDriver.Schedule",
@@ -987,7 +996,9 @@ class TestCase(unittest.TestCase):
             "/VolumeDriver.Schedule",
             json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 1}),
         )
-        with patch("buttervolume.plugin.send_snapshot") as mock_send:
+        with patch("buttervolume.plugin.snapshots_on_remote", return_value=[]), patch(
+            "buttervolume.plugin.send_snapshot"
+        ) as mock_send:
             mock_send.side_effect = Exception("replication failed")
             runjobs(SCHEDULE, True, last_runs=LAST_RUNS)
         mock_send.assert_called_once()
@@ -1264,6 +1275,302 @@ class TestCase(unittest.TestCase):
         # check the volume has the original content
         with open(join(path2, "foobar")) as f:
             self.assertEqual(f.read(), "foobar")
+
+    @contextmanager
+    def remote_next_door(self):
+        """Have the other host be the received directory, without any ssh.
+
+        What ``Test: True`` does for the send, done for the listing and the
+        receive as well, so that a whole move of a volume can be played here.
+        The two hosts share the filesystem, and that is all they share.
+        """
+
+        def listing(remote_host, remote_path, port):
+            return [s.name for s in btrfs.subvolumes_in(remote_path)]
+
+        def transfer(source, parent, into):
+            cmd = ["btrfs", "send"] + (["-p", parent] if parent else []) + [source]
+            run(
+                f"{' '.join(cmd)} | btrfs receive {into}",
+                shell=True,
+                check=True,
+                capture_output=True,
+            )
+
+        def send(snapshot_path, remote_host, remote_snapshots, parent_path=None, port="1122"):
+            transfer(snapshot_path, parent_path, remote_snapshots)
+
+        def receive(remote_host, remote_snapshot_path, remote_parent_path=None, port="1122"):
+            transfer(remote_snapshot_path, remote_parent_path, SNAPSHOTS_PATH)
+
+        with patch("buttervolume.plugin.snapshots_on_remote", side_effect=listing), patch(
+            "buttervolume.plugin.run_btrfs_send_receive", side_effect=send
+        ), patch("buttervolume.plugin.run_btrfs_receive", side_effect=receive) as received:
+            yield received
+
+    def another_host_sends(self, name, content, stamp="2000-01-01T00:00:00.000000"):
+        """What another host running the application leaves on the remote host"""
+        other = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(other)
+        with open(join(VOLUMES_PATH, other, "foobar"), "w") as f:
+            f.write(content)
+        sent = f"{name}@{stamp}"
+        btrfs.Subvolume(join(VOLUMES_PATH, other)).snapshot(
+            join(TEST_REMOTE_PATH, sent), readonly=True
+        )
+        return sent
+
+    def replicated_volume(self, name, content="foobar"):
+        self.create_a_volume_with_a_file(name)
+        with open(join(VOLUMES_PATH, name, "foobar"), "w") as f:
+            f.write(content)
+        self.app.post(
+            "/VolumeDriver.Schedule",
+            json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 1}),
+        )
+
+    def mount(self, name):
+        return jsonloads(
+            self.app.post("/VolumeDriver.Mount", json.dumps({"Name": name, "Test": True})).body
+        )
+
+    def unmount(self, name):
+        return jsonloads(
+            self.app.post("/VolumeDriver.Unmount", json.dumps({"Name": name, "Test": True})).body
+        )
+
+    def content_of(self, name):
+        with open(join(VOLUMES_PATH, name, "foobar")) as f:
+            return f.read()
+
+    def snapshots_of_volume(self, name, where=SNAPSHOTS_PATH):
+        return sorted(s for s in os.listdir(where) if s.startswith(name + "@"))
+
+    def test_a_volume_follows_its_container_from_one_host_to_the_other(self):
+        """Mount takes what the other host holds, unmount sends the final state"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.replicated_volume(name, "written here")
+        with self.remote_next_door() as received:
+            # the first mount finds nothing over there and keeps the volume
+            self.assertEqual(self.mount(name)["Err"], "")
+            self.assertEqual(self.content_of(name), "written here")
+            self.assertEqual(self.snapshots_of_volume(name), [])
+            # the last unmount sends the state the container left
+            self.assertEqual(self.unmount(name), {"Err": ""})
+            [first] = self.snapshots_of_volume(name, TEST_REMOTE_PATH)
+
+            # the application runs on the other host meanwhile, and comes back
+            later = self.another_host_sends(name, "written elsewhere")
+            self.assertEqual(self.mount(name)["Err"], "")
+            self.assertEqual(self.content_of(name), "written elsewhere")
+            # what the volume held was already the first snapshot: no new one.
+            # The trace of the first send went, the receive left a newer one
+            self.assertEqual(
+                self.snapshots_of_volume(name), sorted([first, later, f"{later}@localhost"])
+            )
+
+            # a second container on the same volume mounts and unmounts
+            # without the volume changing hands
+            received.reset_mock()
+            self.assertEqual(self.mount(name)["Err"], "")
+            self.assertEqual(self.unmount(name), {"Err": ""})
+            received.assert_not_called()
+            self.assertEqual(
+                self.snapshots_of_volume(name, TEST_REMOTE_PATH), sorted([first, later])
+            )
+            self.assertEqual(self.content_of(name), "written elsewhere")
+
+            # the last container writes and stops: its state goes out, on top
+            # of the history that came in
+            with open(join(VOLUMES_PATH, name, "foobar"), "w") as f:
+                f.write("written here again")
+            self.assertEqual(self.unmount(name), {"Err": ""})
+            over_there = self.snapshots_of_volume(name, TEST_REMOTE_PATH)
+            self.assertEqual(len(over_there), 3)
+            [final] = [s for s in over_there if s not in (first, later)]
+            with open(join(TEST_REMOTE_PATH, final, "foobar")) as f:
+                self.assertEqual(f.read(), "written here again")
+            # and restoring it there is the proof it is whole
+            target = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+            btrfs.Subvolume(join(TEST_REMOTE_PATH, final)).snapshot(join(VOLUMES_PATH, target))
+            self.assertEqual(self.content_of(target), "written here again")
+
+    def test_a_host_that_crashed_does_not_bury_the_work_done_elsewhere(self):
+        """Its unsent writes are kept aside, and the work done elsewhere wins"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.replicated_volume(name, "before the crash")
+        with self.remote_next_door():
+            self.mount(name)
+            self.unmount(name)
+            [first] = self.snapshots_of_volume(name, TEST_REMOTE_PATH)
+            # the container runs again, writes, and the host crashes: no unmount
+            self.mount(name)
+            with open(join(VOLUMES_PATH, name, "foobar"), "w") as f:
+                f.write("never sent")
+            later = self.another_host_sends(name, "done elsewhere")
+
+            # the scheduled round, with the plugin still counting a container:
+            # its send is refused, its snapshot taken back, round after round
+            for _ in range(2):
+                with self.assertLogs(level=logging.WARNING) as log_capture:
+                    runjobs(SCHEDULE, True, last_runs=LAST_RUNS)
+                self.assertTrue(any(later in msg for msg in log_capture.output))
+            self.assertEqual(self.snapshots_of_volume(name), [first, f"{first}@localhost"])
+            self.assertEqual(
+                self.snapshots_of_volume(name, TEST_REMOTE_PATH), sorted([first, later])
+            )
+
+            # the plugin restarts with the host and counts from zero: the next
+            # mount brings the work done elsewhere in, and keeps the rest aside
+            plugin.mounted.clear()
+            self.assertEqual(self.mount(name)["Err"], "")
+            self.assertEqual(self.content_of(name), "done elsewhere")
+            kept = [
+                s
+                for s in self.snapshots_of_volume(name)
+                if s not in (first, f"{first}@localhost", later, f"{later}@localhost")
+            ]
+            self.assertEqual(len(kept), 1)
+            with open(join(SNAPSHOTS_PATH, kept[0], "foobar")) as f:
+                self.assertEqual(f.read(), "never sent")
+
+            # the container crashes at once and the plugin restarts again: the
+            # snapshot kept aside is the last to have appeared here, and it
+            # was taken here, so nothing is restored over the work done elsewhere
+            plugin.mounted.clear()
+            self.assertEqual(self.mount(name)["Err"], "")
+            self.assertEqual(self.content_of(name), "done elsewhere")
+            self.assertEqual(
+                self.snapshots_of_volume(name),
+                sorted([first, later, f"{later}@localhost", kept[0]]),
+            )
+
+    def test_an_empty_volume_takes_what_the_other_hosts_hold(self):
+        """A volume Docker just created on a host the application moved to"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        with self.remote_next_door():
+            sent = self.another_host_sends(name, "done elsewhere")
+            self.app.post("/VolumeDriver.Create", json.dumps({"Name": name}))
+            self.app.post(
+                "/VolumeDriver.Schedule",
+                json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 1}),
+            )
+            self.assertEqual(self.mount(name)["Err"], "")
+            self.assertEqual(self.content_of(name), "done elsewhere")
+            # nothing was kept of an empty volume
+            self.assertEqual(self.snapshots_of_volume(name), [sent, f"{sent}@localhost"])
+
+    def test_a_volume_recreated_after_its_removal_takes_its_last_snapshot_back(self):
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.replicated_volume(name, "before the removal")
+        with self.remote_next_door():
+            self.mount(name)
+            self.unmount(name)
+            self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name}))
+            self.app.post("/VolumeDriver.Create", json.dumps({"Name": name}))
+            self.assertEqual(self.mount(name)["Err"], "")
+            self.assertEqual(self.content_of(name), "before the removal")
+
+    def test_a_snapshot_received_by_hand_is_restored_at_the_next_mount(self):
+        """And a host at rest sends nothing meanwhile, whatever the dates say"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.replicated_volume(name, "written here")
+        with self.remote_next_door():
+            self.mount(name)
+            self.unmount(name)
+            later = self.another_host_sends(name, "done elsewhere", "2999-01-01T00:00:00.000000")
+            resp = jsonloads(
+                self.app.post(
+                    "/VolumeDriver.Snapshot.Receive",
+                    json.dumps({"Name": name, "Host": "localhost", "Test": True}),
+                ).body
+            )
+            self.assertEqual(resp["Snapshot"], later)
+            self.assertEqual(self.content_of(name), "written here")
+            # the volume is unchanged since its own last snapshot: nothing to send
+            runjobs(SCHEDULE, True, last_runs=LAST_RUNS)
+            self.assertEqual(len(self.snapshots_of_volume(name, TEST_REMOTE_PATH)), 2)
+            self.assertEqual(self.mount(name)["Err"], "")
+            self.assertEqual(self.content_of(name), "done elsewhere")
+
+    def test_a_host_where_nothing_runs_fetches_what_the_other_holds_at_each_round(self):
+        """So that the mount has a difference to receive, not a whole volume"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.replicated_volume(name, "written here")
+        with self.remote_next_door() as received:
+            self.mount(name)
+            self.unmount(name)
+            later = self.another_host_sends(name, "done elsewhere")
+            runjobs(SCHEDULE, True, last_runs=LAST_RUNS)
+            self.assertIn(later, self.snapshots_of_volume(name))
+            # fetched, not restored: which snapshot becomes the volume is the
+            # mount's decision
+            self.assertEqual(self.content_of(name), "written here")
+            received.reset_mock()
+            self.assertEqual(self.mount(name)["Err"], "")
+            self.assertEqual(self.content_of(name), "done elsewhere")
+            received.assert_not_called()
+
+    def test_a_host_that_does_not_answer_refuses_the_mount(self):
+        """Mounting on "there is nothing over there" when nobody said so is the one thing not to do"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.replicated_volume(name)
+        with patch(
+            "buttervolume.plugin.snapshots_on_remote",
+            side_effect=plugin.ReplicationError("Could not read the snapshots of localhost"),
+        ):
+            resp = self.mount(name)
+            self.assertIn("Could not read the snapshots of localhost", resp["Err"])
+            self.assertIn("replicate:localhost pause", resp["Err"])
+            # pausing the line is the way out, and the mount asks nobody
+            self.app.post(
+                "/VolumeDriver.Schedule",
+                json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": "pause"}),
+            )
+            self.assertEqual(self.mount(name)["Err"], "")
+            self.assertEqual(self.unmount(name), {"Err": ""})
+
+    def test_a_volume_nobody_replicates_is_mounted_as_it_is(self):
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        with patch("buttervolume.plugin.snapshots_on_remote") as listing:
+            self.assertEqual(self.mount(name)["Err"], "")
+            self.assertEqual(self.unmount(name), {"Err": ""})
+        listing.assert_not_called()
+        self.assertEqual(self.snapshots_of_volume(name), [])
+
+    def test_the_final_state_of_a_rolled_back_volume_still_goes_out(self):
+        """A restore by hand on the host that runs the application is its own history"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.replicated_volume(name, "first")
+        with self.remote_next_door():
+            self.mount(name)
+            self.unmount(name)
+            [first] = self.snapshots_of_volume(name, TEST_REMOTE_PATH)
+            self.mount(name)
+            with open(join(VOLUMES_PATH, name, "foobar"), "w") as f:
+                f.write("second")
+            self.unmount(name)
+            self.mount(name)
+            # back to the first state, then on from there
+            self.restore_of(first)
+            with open(join(VOLUMES_PATH, name, "foobar"), "w") as f:
+                f.write("third")
+            self.assertEqual(self.unmount(name), {"Err": ""})
+            over_there = self.snapshots_of_volume(name, TEST_REMOTE_PATH)
+            self.assertEqual(len(over_there), 3)
+            with open(join(TEST_REMOTE_PATH, over_there[-1], "foobar")) as f:
+                self.assertEqual(f.read(), "third")
+
+    def test_a_mount_that_fails_is_not_counted(self):
+        """Docker calls no Unmount for a container it did not start"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.replicated_volume(name)
+        with patch(
+            "buttervolume.plugin.snapshots_on_remote", side_effect=plugin.ReplicationError("down")
+        ):
+            self.assertTrue(self.mount(name)["Err"])
+        self.assertFalse(plugin.mounted.get(name))
 
     def receive_locally(self, name, source):
         """Put a copy of this subvolume in the snapshots directory, as a receive would
@@ -2276,6 +2583,31 @@ class TestWhatToFetch(unittest.TestCase):
         snapshot, parent = snapshot_to_fetch("www", ["www@t1", "www@t2"], ["www@t1", "www@t 2"])
         self.assertEqual(str(snapshot), "www@t2")
         self.assertEqual(str(parent), "www@t1")
+
+
+class TestWhatToRestore(unittest.TestCase):
+    """Which snapshot a mounted volume is brought to, decided from two lists and a flag"""
+
+    def test_the_last_snapshot_to_appear_is_restored_when_it_came_from_elsewhere(self):
+        events = [("www@t1", False), ("www@t2", True)]
+        self.assertEqual(snapshot_to_restore(False, events, ["www@t2"]), "www@t2")
+
+    def test_a_snapshot_taken_here_since_is_the_volume_going_on(self):
+        # what was received before, and what the dates say, do not matter
+        events = [("www@t9", True), ("www@t1", False)]
+        self.assertIsNone(snapshot_to_restore(False, events, ["www@t9"]))
+
+    def test_an_empty_volume_takes_what_the_hosts_hold(self):
+        events = [("www@t1", False), ("www@t2", True), ("www@t3", False)]
+        self.assertEqual(snapshot_to_restore(True, events, ["www@t2"]), "www@t2")
+        # the last of the candidates to have appeared here, when there are two
+        self.assertEqual(snapshot_to_restore(True, events, ["www@t3", "www@t2"]), "www@t3")
+        # and its last snapshot when the hosts hold nothing of it
+        self.assertEqual(snapshot_to_restore(True, events, []), "www@t3")
+
+    def test_a_volume_without_a_snapshot_is_left_as_it_is(self):
+        self.assertIsNone(snapshot_to_restore(True, [], []))
+        self.assertIsNone(snapshot_to_restore(False, [], ["www@t1"]))
 
 
 class TestPurgePattern(unittest.TestCase):
