@@ -4,6 +4,11 @@ CHANGELOG
 4.0 (unreleased)
 ****************
 
+- The manual explains how to leave ``anybox/buttervolume`` behind: an in
+  place upgrade of the plugin that keeps its name and touches no volume, or a
+  snapshot and restore of each volume under the new name, and how to move
+  the volumes to another host without either.
+
 - A synchronization of a volume that does not exist locally is refused
   instead of creating one that cannot work. ``rsync`` creates the path it is
   given, so a mistyped name left a plain directory among the subvolumes: the
