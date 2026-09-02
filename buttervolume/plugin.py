@@ -681,21 +681,39 @@ def snapshot_receive(req):
 snapshotting = threading.Lock()
 
 
-@route("/VolumeDriver.Snapshot")
-def volume_snapshot(req):
-    """Snapshot a volume in the SNAPSHOTS dir, unless it holds nothing new.
+def snapshots_taken_here(volume_name):
+    """The snapshots taken of this volume on this host, in the order they were taken.
 
-    The answer names the snapshot that holds the state of the volume, and says
-    in "Created" whether this call is the one that took it. A volume nobody
-    wrote to gives the name of the previous snapshot and takes none, which is
-    what keeps a replication scheduled every minute from filling the disk with
+    Left out: the traces of the sends, whose content is that of their own
+    snapshot but which the next send would refuse if named; and the snapshots
+    received from another host, which were never taken of this volume, so
+    nothing says how the volume compares to them. The order is the one BTRFS
+    created them in, not the one the dates in their names spell.
+    """
+    return [
+        listed.name
+        for listed in btrfs.subvolumes_in(SNAPSHOTS_PATH)
+        if not listed.received
+        for s in parsed([listed.name])
+        if s.volume == volume_name and not s.host
+    ]
+
+
+def take_snapshot(name):
+    """Snapshot this volume, unless it holds nothing new since the last snapshot.
+
+    Answers the name of the snapshot that holds the state of the volume, and
+    whether this call is the one that took it. A volume nobody wrote to gives
+    the name of the last snapshot taken of it and takes none, which is what
+    keeps a replication scheduled every minute from filling the disk with
     identical copies. A caller that deletes what it created has to read that
     flag: the name alone no longer says whose snapshot it is.
     """
-    name = req["Name"]
     volume = existing_volume(name)
 
     with snapshotting:
+        taken = snapshots_taken_here(name)
+        previous = taken[-1] if taken else None
         timestamped = new_snapshot_name(name)
         path = snapshotpath(timestamped)
         volume.snapshot(path, readonly=True)
@@ -703,24 +721,13 @@ def volume_snapshot(req):
         # BTRFS cannot compare a live volume to a snapshot, since a send needs
         # a readonly subvolume, so the comparison happens after the fact: the
         # copy just taken is deleted when it holds nothing the previous one
-        # does not. The traces of the sends are left out: their content is that
-        # of their own snapshot, but naming one here would have the next send
-        # refuse it.
-        previous = max(
-            (
-                s
-                for s in parsed(os.listdir(SNAPSHOTS_PATH))
-                if s.volume == name and not s.host and str(s) != timestamped
-            ),
-            key=str,
-            default=None,
-        )
+        # does not.
         if previous:
             try:
-                if btrfs.Subvolume(path).is_same_as(snapshotpath(str(previous))):
+                if btrfs.Subvolume(path).is_same_as(snapshotpath(previous)):
                     btrfs.Subvolume(path).delete()
                     log.info("%s has not changed since %s", name, previous)
-                    return {"Err": "", "Snapshot": str(previous), "Created": False}
+                    return previous, False
             except BtrfsError as e:
                 # neither a comparison we could not make nor a deletion that
                 # failed is a reason to lose a snapshot: the copy is kept, and
@@ -731,7 +738,18 @@ def volume_snapshot(req):
                     previous,
                     e,
                 )
-        return {"Err": "", "Snapshot": timestamped, "Created": True}
+        return timestamped, True
+
+
+@route("/VolumeDriver.Snapshot")
+def volume_snapshot(req):
+    """Snapshot a volume in the SNAPSHOTS dir, unless it holds nothing new.
+
+    The answer names the snapshot that holds the state of the volume, and says
+    in "Created" whether this call is the one that took it.
+    """
+    snapshot, created = take_snapshot(req["Name"])
+    return {"Err": "", "Snapshot": snapshot, "Created": created}
 
 
 @route("/VolumeDriver.Snapshot.List", "GET")
@@ -830,12 +848,52 @@ def schedule_enable(_):
 
 @route("/VolumeDriver.Snapshot.Restore")
 def snapshot_restore(req):
-    """
-    Snapshot a volume and overwrite it with the specified snapshot.
-    """
-    snapshot_name = req["Name"]
-    target_name = req.get("Target")
+    """Replace a volume with a snapshot, keeping what the volume held."""
+    return restore(req["Name"], req.get("Target"))
 
+
+def keep_what_it_holds(volume, target_name, snapshot_path):
+    """Snapshot this volume before it is replaced, and name where its content went.
+
+    The copy taken goes through the rule a snapshot goes through: when the
+    volume holds exactly what the last snapshot taken of it holds, that
+    snapshot is the answer and the copy is deleted. And when it holds exactly
+    what the snapshot about to be restored holds, there is nothing to keep and
+    nothing to restore: the answer is None, and the copy is deleted too. An
+    empty volume, which is what Docker hands over and what a `docker volume
+    rm` leaves behind once recreated, has nothing to keep either, and the
+    answer is the empty string.
+
+    Whether the volume is empty is read on the copy, not on the volume:
+    reading a directory updates its access time, the comparison below would
+    see that as a change, and the volume would never be found unchanged.
+    """
+    with snapshotting:
+        taken = snapshots_taken_here(target_name)
+        previous = taken[-1] if taken else None
+        copy = new_snapshot_name(target_name)
+        copy_path = snapshotpath(copy)
+        volume.snapshot(copy_path, readonly=True)
+        if not os.listdir(copy_path):
+            btrfs.Subvolume(copy_path).delete()
+            return ""
+        if btrfs.Subvolume(copy_path).is_same_as(snapshot_path):
+            btrfs.Subvolume(copy_path).delete()
+            return None
+        if previous and btrfs.Subvolume(copy_path).is_same_as(snapshotpath(previous)):
+            btrfs.Subvolume(copy_path).delete()
+            return previous
+        return copy
+
+
+def restore(snapshot_name, target_name=None):
+    """Make this snapshot the volume, and answer where what the volume held went.
+
+    ``VolumeBackup`` names the snapshot that holds what the volume held before,
+    and is empty when it held nothing. ``Restored`` says whether the volume
+    was replaced: it is not when it already holds exactly this snapshot, so
+    asking twice does the same as asking once.
+    """
     if "@" not in snapshot_name:
         # we're passing the name of the volume. Use the latest snapshot.
         volume_name = validate_volume_name(snapshot_name)
@@ -852,20 +910,26 @@ def snapshot_restore(req):
     target_name = target_name or Snapshot.parse(snapshot_name).volume
     target_path = volumepath(target_name)
     volume = btrfs.Subvolume(target_path)
-    res = {"Err": ""}
 
     if not snapshot.exists():
         raise SnapshotNotFoundError(f"Snapshot '{snapshot_name}' is not a valid BTRFS subvolume")
 
+    backup = ""
     if volume.exists():
-        # backup and delete
-        stamped_name = new_snapshot_name(target_name)
-        volume.snapshot(snapshotpath(stamped_name), readonly=True)
-        res["VolumeBackup"] = stamped_name
+        backup = keep_what_it_holds(volume, target_name, snapshot_path)
+        if backup is None:
+            log.info("%s already holds %s, nothing to restore", target_name, snapshot_name)
+            return {"Err": "", "VolumeBackup": "", "Restored": False}
         volume.delete()
 
     snapshot.snapshot(target_path)
-    return res
+    log.info(
+        "Restored %s as %s, what it held is kept as %s",
+        snapshot_name,
+        target_name,
+        backup or "nothing",
+    )
+    return {"Err": "", "VolumeBackup": backup, "Restored": True}
 
 
 @route("/VolumeDriver.Clone")

@@ -1179,6 +1179,112 @@ class TestCase(unittest.TestCase):
         with open(join(path2, "foobar")) as f:
             self.assertEqual(f.read(), "foobar")
 
+    def receive_locally(self, name, source):
+        """Put a copy of this subvolume in the snapshots directory, as a receive would
+
+        The copy carries the mark of a subvolume that came from another host,
+        which is what these tests need, and nothing crosses a network.
+        """
+        staged = join(TEST_REMOTE_PATH, name)
+        btrfs.Subvolume(source).snapshot(staged, readonly=True)
+        run(
+            f"btrfs send {staged} | btrfs receive {SNAPSHOTS_PATH}",
+            shell=True,
+            check=True,
+            capture_output=True,
+        )
+        return join(SNAPSHOTS_PATH, name)
+
+    def restore_of(self, snapshot, target=None):
+        return jsonloads(
+            self.app.post(
+                "/VolumeDriver.Snapshot.Restore", json.dumps({"Name": snapshot, "Target": target})
+            ).body
+        )
+
+    def test_a_volume_unchanged_since_its_last_snapshot_is_not_backed_up_again(self):
+        """The backup of a restore goes through the rule a snapshot goes through"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        first = jsonloads(self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body)
+        self.write_a_byte(name)
+        second = jsonloads(self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body)
+
+        resp = self.restore_of(first["Snapshot"])
+        self.assertEqual(resp, {"Err": "", "VolumeBackup": second["Snapshot"], "Restored": True})
+        with open(join(VOLUMES_PATH, name, "foobar")) as f:
+            self.assertEqual(f.read(), "foobar")
+        # what the volume held is in the second snapshot, and nowhere else
+        self.assertEqual(
+            sorted(s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")),
+            sorted([first["Snapshot"], second["Snapshot"]]),
+        )
+
+    def test_a_volume_that_already_holds_the_snapshot_is_left_alone(self):
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        snapshot = jsonloads(
+            self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body
+        )["Snapshot"]
+        before = btrfs.Subvolume(join(VOLUMES_PATH, name)).show()["UUID"]
+
+        resp = self.restore_of(snapshot)
+        self.assertEqual(resp, {"Err": "", "VolumeBackup": "", "Restored": False})
+        # the very same subvolume, not a copy of it
+        self.assertEqual(btrfs.Subvolume(join(VOLUMES_PATH, name)).show()["UUID"], before)
+        self.assertEqual(
+            [s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")], [snapshot]
+        )
+
+    def test_an_empty_volume_has_nothing_to_keep(self):
+        """What Docker hands over, and what a docker volume rm leaves once recreated"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        snapshot = jsonloads(
+            self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body
+        )["Snapshot"]
+        empty = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.app.post("/VolumeDriver.Create", json.dumps({"Name": empty}))
+
+        resp = self.restore_of(snapshot, target=empty)
+        self.assertEqual(resp, {"Err": "", "VolumeBackup": "", "Restored": True})
+        with open(join(VOLUMES_PATH, empty, "foobar")) as f:
+            self.assertEqual(f.read(), "foobar")
+        self.assertEqual([s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(empty + "@")], [])
+
+    def test_a_snapshot_is_compared_with_the_last_one_taken_here(self):
+        """A snapshot received from another host was never taken of this volume"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        first = jsonloads(self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body)
+        # a fresher copy arrives from another host, carrying other content and
+        # a date that sorts after everything taken here
+        other = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(other)
+        self.write_a_byte(other)
+        self.receive_locally(f"{name}@2999-01-01T00:00:00.000000", join(VOLUMES_PATH, other))
+
+        # the volume itself did not change: nothing to snapshot, nothing to send
+        again = jsonloads(self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body)
+        self.assertEqual(again, {"Err": "", "Snapshot": first["Snapshot"], "Created": False})
+
+    def test_the_same_content_from_another_lineage_is_not_taken_for_the_same_snapshot(self):
+        """Two subvolumes that share no history are compared as different, and never raise"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        twin = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(twin)
+        received = f"{name}@2026-01-01T00:00:00.000000"
+        self.receive_locally(received, join(VOLUMES_PATH, twin))
+
+        resp = self.restore_of(received)
+        self.assertEqual(resp["Err"], "")
+        self.assertTrue(resp["Restored"])
+        # what the volume held is kept, since nothing could prove it identical
+        self.assertTrue(resp["VolumeBackup"].startswith(name + "@"))
+        with open(join(VOLUMES_PATH, name, "foobar")) as f:
+            self.assertEqual(f.read(), "foobar")
+
     def test_clone(self):
         """Check we can clone as a new volume"""
         # create a volume with a file

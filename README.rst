@@ -468,13 +468,19 @@ to live in ``/var/lib/buttervolume/volumes``.
 Restore a snapshot
 ------------------
 
-You can restore a snapshot as a volume. The current volume will first
-be snapshotted, deleted, then replaced with the snapshot.  If you provide a
-volume name instead of a snapshot, the **latest snapshot** is restored. So no
-data is lost if you do something wrong. Please take care of stopping the
-container before restoring a snapshot::
+You can restore a snapshot as a volume. What the volume holds is kept as a
+snapshot first, then the volume is deleted and replaced with the snapshot. If
+you provide a volume name instead of a snapshot, the **latest snapshot** is
+restored. So no data is lost if you do something wrong. Please take care of
+stopping the container before restoring a snapshot::
 
     buttervolume restore <snapshot>
+
+The command prints the name of the snapshot that holds what the volume held.
+That is a new one only when the volume had changed since its last snapshot:
+when it had not, that last snapshot is the one, and nothing is written. An
+empty volume has nothing to keep, and a volume that already holds exactly the
+snapshot asked for is left alone.
 
 ``<snapshot>`` is the name of the snapshot, not the full path. It is expected
 to live in ``/var/lib/buttervolume/snapshots``.

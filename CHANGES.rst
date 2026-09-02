@@ -12,6 +12,22 @@ CHANGELOG
   subvolume where a directory already stood. Removing it meant deleting the
   directory by hand.
 
+- A restore no longer leaves a snapshot behind when the volume held nothing
+  new. What the volume held is kept as a snapshot before it is replaced, and
+  that snapshot is now the previous one when nothing changed since it, none
+  at all when the volume was empty; and a restore of the snapshot the volume
+  already holds does nothing. The answer of ``/VolumeDriver.Snapshot.Restore``
+  always carries ``VolumeBackup``, naming the snapshot that holds what the
+  volume held or empty when it held nothing, and a new ``Restored`` field
+  saying whether the volume was replaced.
+
+- A snapshot is now compared with the last snapshot taken of the volume on
+  this host, in the order they were taken, and no longer with a snapshot
+  received from another host that happens to carry a later date. Such a
+  snapshot was never taken of this volume, and comparing with it made a host
+  at rest snapshot its stale volume again the minute after a fresher copy
+  arrived, then send that.
+
 - A receive now fetches the last snapshot that appeared on the other host,
   taken there or received there, instead of the one carrying the latest date
   in its name. That date is written by the clock of whichever host took the
