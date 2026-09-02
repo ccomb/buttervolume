@@ -513,11 +513,16 @@ def knows(snapshot, remote_host):
 
 @route("/VolumeDriver.Snapshot.Send")
 def snapshot_send(req):
-    """The last sent snapshot is remembered by adding a suffix with the target"""
-    test = req.get("Test", False)
-    snapshot_name = req["Name"]
-    remote_host = req["Host"]
+    """Send a snapshot to another host."""
+    send_snapshot(req["Name"], req["Host"], req.get("Test", False))
+    return {"Err": ""}
 
+
+def send_snapshot(snapshot_name, remote_host, test=False):
+    """Send this snapshot to that host, incrementally when a previous send allows it.
+
+    The last sent snapshot is remembered by adding a suffix with the target.
+    """
     snapshot = Snapshot.parse(snapshot_name)
     if snapshot.host:
         # sending a trace would name its own trace, and btrfs would refuse
@@ -595,7 +600,60 @@ def snapshot_send(req):
 
     keep_trace(snapshot, remote_host)
 
-    return {"Err": ""}
+
+# One replication of a volume at a time. A replication is a snapshot and a
+# send, and two of them interleaved on the same volume would send the same
+# snapshot twice, or a newer one before an older. The scheduled round refuses
+# to wait, since a send longer than its timer would otherwise pile rounds up
+# behind it; the unmount of a volume waits, because what it has to send is the
+# final state, after whatever was under way. The locks live in memory alone,
+# and that is right: a daemon that stops has no replication under way either.
+replications = {}
+replications_lock = threading.Lock()
+
+
+def replication_lock(name):
+    """The lock of this volume's replications, made on first use."""
+    with replications_lock:
+        return replications.setdefault(name, threading.Lock())
+
+
+def replicate(name, remote_host, test=False, wait=False):
+    """Snapshot this volume and send that snapshot to this host, as one step.
+
+    Answers the name of the snapshot that host now holds. A send that fails
+    takes back the snapshot this call took for it, and only that one: a
+    volume nobody wrote to gives back the snapshot of an earlier call, which a
+    failure here is no reason to delete. ``wait`` says what to do when a
+    replication of this volume is under way: wait for it, or refuse.
+    """
+    lock = replication_lock(name)
+    if not lock.acquire(blocking=wait):
+        raise ReplicationError(f"Replication of {name} already in progress")
+    try:
+        snapshot, created = take_snapshot(name)
+        try:
+            send_snapshot(snapshot, remote_host, test)
+        except Exception:
+            if created:
+                try:
+                    btrfs.Subvolume(snapshotpath(snapshot)).delete()
+                    log.info("Removed snapshot %s of the failed replication", snapshot)
+                except BtrfsError as e:
+                    log.warning(
+                        "Could not remove snapshot %s of the failed replication: %s", snapshot, e
+                    )
+            raise
+        return snapshot
+    finally:
+        lock.release()
+
+
+@route("/VolumeDriver.Replicate")
+def volume_replicate(req):
+    """Snapshot a volume and send the snapshot to another host, as one step."""
+    snapshot = replicate(req["Name"], req["Host"], req.get("Test", False))
+    return {"Err": "", "Snapshot": snapshot}
 
 
 # One receive at a time. A `btrfs receive` that stops early leaves behind what

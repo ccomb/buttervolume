@@ -11,8 +11,9 @@ The two files the plugin keeps outside BTRFS are both read and written in
 ``schedule.py``: ``schedule.csv``, which says what to run, and ``lastruns.csv``,
 where the scheduler writes down the date of every job that succeeded. It reads
 that second file at each round rather than remembering anything, so a daemon
-that stops picks its jobs up where it left them. Only the replications under
-way live in memory, and a daemon that stops has none.
+that stops picks its jobs up where it left them. Nothing lives in memory
+here: which replications are under way is the plugin's business, since the
+unmount of a volume replicates too and has to wait for the same ones.
 
 The thread itself is started and stopped by ``cli.py``, which owns the daemon
 and its signals. What is here only knows how to run one round.
@@ -25,7 +26,7 @@ from functools import singledispatch
 from os.path import exists
 from subprocess import CalledProcessError
 
-from buttervolume import ReplicationError, ValidationError, api
+from buttervolume import ValidationError, api
 from buttervolume.config import LAST_RUNS, SCHEDULE, TIMER
 from buttervolume.schedule import (
     Entry,
@@ -40,10 +41,6 @@ from buttervolume.schedule import (
 )
 
 log = logging.getLogger()
-
-# The volumes a replication is under way for. It lives in memory alone, and
-# that is right: a daemon that stops has no replication under way either.
-ReplicationInProgress = set()
 
 
 def is_due(entry, last, now):
@@ -99,41 +96,20 @@ def run_snapshot(job: Snapshot, name, test=False):
 
 @run_job.register
 def run_replicate(job: Replicate, name, test=False):
-    if name in ReplicationInProgress:
-        log.warning(f"Replication of {name} already in progress, skipping.")
+    """One call: the plugin snapshots, sends, and takes back its snapshot if the send fails.
+
+    A replication of the same volume still under way, from a round whose send
+    outlasted the timer, is answered as an error by the plugin, so this round
+    is not spent and comes back at the next one.
+    """
+    log.info("Starting scheduled replication of %s to %s", name, job.host)
+    snap = api.replicate(name, job.host, test=test)
+    if not snap:
+        # the error is already logged by the client
+        log.warning("Replication failed: %s to %s", name, job.host)
         return False
-    log.info("Starting scheduled replication of %s", name)
-    snap = None
-    created = False
-    try:
-        ReplicationInProgress.add(name)
-        snap, created = api.snapshot(name, test=test)
-        if not snap:
-            log.info("Could not snapshot %s", name)
-            return False
-        log.info("Replicating %s", snap)
-        if not api.send(snap, job.host, test=test):
-            # the same road as an exception: the error is already logged, and
-            # a snapshot taken for this replication has no reason to stay
-            raise ReplicationError(f"Could not send {snap} to {job.host}")
-        log.info("Successfully replicated %s to %s", name, snap)
-        return True
-    except Exception as e:
-        log.warning("Replication failed: %s", e)
-        # remove the snapshot this round created for the replication, and
-        # only that one: an unchanged volume gives back the snapshot of an
-        # earlier round, which a failure here is no reason to delete
-        if snap and created:
-            if api.remove(snap, test=test):
-                log.info("Removed snapshot %s for failed replication", snap)
-            else:
-                log.warning(
-                    "Could not remove snapshot %s of the failed replication",
-                    snap,
-                )
-        return False
-    finally:
-        ReplicationInProgress.remove(name)
+    log.info("Successfully replicated %s to %s as %s", name, job.host, snap)
+    return True
 
 
 @run_job.register

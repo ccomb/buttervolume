@@ -427,6 +427,7 @@ When buttervolume is installed, it provides a command line tool
     restore             Restore a snapshot (optionally to a different volume)
     clone               Clone a volume as new volume
     send                Send a snapshot to another host
+    replicate           Snapshot a volume and send the snapshot to another host
     receive             Receive from another host its last snapshot of a volume
     sync                Synchronise a volume from a remote host volume
     rm                  Delete a snapshot
@@ -584,6 +585,15 @@ consuming a lot of bandwith or disk space::
 ``<snapshot>`` is the name of the snapshot, not the full path. It is expected
 to live in ``/var/lib/buttervolume/snapshots`` and is replicated to the same path on
 the remote host.
+
+To snapshot a volume and send that snapshot in one step, which is what a
+scheduled replication does at each round, name the volume instead::
+
+    buttervolume replicate <host> <volume>
+
+It prints the name of the snapshot the remote host now holds. A volume
+unchanged since its last snapshot sends that one, and sends nothing when the
+remote host already has it.
 
 What the remote host already holds is read from the trace kept locally,
 named ``<volume>@<datetime>@<host>``. That trace is written after each send,

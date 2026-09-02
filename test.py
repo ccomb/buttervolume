@@ -27,7 +27,7 @@ from unittest.mock import MagicMock, patch
 
 from webtest import TestApp
 
-from buttervolume import ValidationError, btrfs, cli, plugin, schedule, scheduler
+from buttervolume import ValidationError, btrfs, cli, plugin, schedule
 from buttervolume.config import (
     DTFORMAT,
     SNAPSHOTS_PATH,
@@ -177,7 +177,7 @@ class TestCase(unittest.TestCase):
             pass  # Don't fail the test if cleanup fails
 
     def test_replication_lock(self):
-        """Check that the replication lock prevents concurrent replications"""
+        """A replication under way makes the next round skip, and a final send wait"""
         # create a volume with a file
         name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
         self.create_a_volume_with_a_file(name)
@@ -190,9 +190,8 @@ class TestCase(unittest.TestCase):
         # simulate a long-running replication
         def slow_send(*args, **kwargs):
             time.sleep(2)
-            return True
 
-        with patch("buttervolume.api.send") as mock_send:
+        with patch("buttervolume.plugin.send_snapshot") as mock_send:
             mock_send.side_effect = slow_send
             # run the scheduler in a separate thread
             t = threading.Thread(
@@ -202,15 +201,23 @@ class TestCase(unittest.TestCase):
             # wait for the replication to start
             time.sleep(1)
             # check that the replication is in progress
-            self.assertIn(name, scheduler.ReplicationInProgress)
+            self.assertTrue(plugin.replication_lock(name).locked())
             # run the scheduler again
             runjobs(SCHEDULE, True, last_runs=LAST_RUNS)
-            # check that the second replication was skipped
+            # check that the second replication was skipped, not queued
             mock_send.assert_called_once()
-            # wait for the replication to finish
+            # a caller that has the final state to send waits its turn instead
+            waiting = threading.Thread(
+                target=plugin.replicate,
+                args=(name, "localhost"),
+                kwargs={"test": True, "wait": True},
+            )
+            waiting.start()
             t.join()
+            waiting.join()
+            self.assertEqual(mock_send.call_count, 2)
             # check that the lock is released
-            self.assertNotIn(name, scheduler.ReplicationInProgress)
+            self.assertFalse(plugin.replication_lock(name).locked())
         # unschedule
         self.app.post(
             "/VolumeDriver.Schedule",
@@ -274,7 +281,7 @@ class TestCase(unittest.TestCase):
             "/VolumeDriver.Schedule",
             json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 1}),
         )
-        with patch("buttervolume.api.send") as mock_send:
+        with patch("buttervolume.plugin.send_snapshot") as mock_send:
             mock_send.side_effect = Exception("replication failed")
             runjobs(SCHEDULE, True, last_runs=LAST_RUNS)
         mock_send.assert_called_once()
@@ -282,7 +289,7 @@ class TestCase(unittest.TestCase):
         snapshots = [s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")]
         self.assertEqual(snapshots, [])
         # the lock was released
-        self.assertNotIn(name, scheduler.ReplicationInProgress)
+        self.assertFalse(plugin.replication_lock(name).locked())
         # unschedule
         self.app.post(
             "/VolumeDriver.Schedule",
@@ -297,9 +304,9 @@ class TestCase(unittest.TestCase):
             "/VolumeDriver.Schedule",
             json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 1}),
         )
-        with patch("buttervolume.api.send") as mock_send:
-            # what the client answers when the endpoint fills the Err field
-            mock_send.return_value = False
+        with patch("buttervolume.plugin.send_snapshot") as mock_send:
+            # what fills the Err field of the answer
+            mock_send.side_effect = plugin.ReplicationError("the remote host refused")
             with self.assertLogs(level=logging.INFO) as log_capture:
                 runjobs(SCHEDULE, True, last_runs=LAST_RUNS)
 
@@ -980,7 +987,7 @@ class TestCase(unittest.TestCase):
             "/VolumeDriver.Schedule",
             json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 1}),
         )
-        with patch("buttervolume.api.send") as mock_send:
+        with patch("buttervolume.plugin.send_snapshot") as mock_send:
             mock_send.side_effect = Exception("replication failed")
             runjobs(SCHEDULE, True, last_runs=LAST_RUNS)
         mock_send.assert_called_once()

@@ -12,6 +12,15 @@ CHANGELOG
   subvolume where a directory already stood. Removing it meant deleting the
   directory by hand.
 
+- ``buttervolume replicate <host> <volume>`` snapshots a volume and sends that
+  snapshot in one step, which is what a scheduled replication does at each
+  round, and what moving an application by hand needed as two commands. The
+  scheduler now asks the plugin for that one step, through the new
+  ``/VolumeDriver.Replicate`` endpoint, instead of a snapshot, a send and a
+  cleanup of its own. Which replications are under way is the plugin's
+  business from now on, and a round that finds one under way is skipped as
+  before.
+
 - A send now refuses to bury a history it never saw. Before sending, the
   remote host is asked what the last snapshot of the volume to appear there
   is; when this host neither holds it nor holds the trace of exchanging it,
