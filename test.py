@@ -1409,6 +1409,38 @@ class TestCase(unittest.TestCase):
         with self.assertRaises(btrfs.BtrfsError):
             btrfs.run_safe(["there_is_no_such_command"], timeout=btrfs.SHOW_TIMEOUT)
 
+    def test_the_subvolumes_of_a_directory_come_in_the_order_they_appeared(self):
+        """Their names say what a clock said, their rank says what happened first"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        volume = btrfs.Subvolume(join(VOLUMES_PATH, name))
+        later, earlier = f"{name}@2026-09-02T10:00:00.000000", f"{name}@2026-09-02T09:00:00.000000"
+        volume.snapshot(join(SNAPSHOTS_PATH, later), readonly=True)
+        volume.snapshot(join(SNAPSHOTS_PATH, earlier), readonly=True)
+        # a received copy is marked as such, a plain file is not a subvolume
+        run(
+            f"btrfs send {join(SNAPSHOTS_PATH, later)} | btrfs receive {TEST_REMOTE_PATH}",
+            shell=True,
+            check=True,
+            capture_output=True,
+        )
+        with open(join(SNAPSHOTS_PATH, PREFIX_TEST_VOLUME + "stray"), "w") as f:
+            f.write("not a subvolume")
+
+        listed = [s for s in btrfs.subvolumes_in(SNAPSHOTS_PATH) if s.name.startswith(name)]
+        self.assertEqual([s.name for s in listed], [later, earlier])
+        self.assertEqual([s.received for s in listed], [False, False])
+        received = [s for s in btrfs.subvolumes_in(TEST_REMOTE_PATH) if s.name.startswith(name)]
+        self.assertEqual([(s.name, s.received) for s in received], [(later, True)])
+
+        # the command a remote host runs describes the same directory the same way
+        described = check_output(["sh", "-c", btrfs.listing_command(SNAPSHOTS_PATH)]).decode()
+        self.assertEqual(
+            [s for s in btrfs.parse_listing(described) if s.name.startswith(name)], listed
+        )
+        # and fails, rather than describing nothing, when the directory is not there
+        self.assertNotEqual(run(["sh", "-c", btrfs.listing_command("/no/such/dir")]).returncode, 0)
+
     def test_compute_purge(self):
         now = datetime.now()
         snapshots = [
@@ -2383,6 +2415,77 @@ class TestLastRunsFile(unittest.TestCase):
         left = os.listdir(self.tmpdir.name)
         self.assertEqual(len(left), 1)
         self.assertTrue(left[0].startswith("lastruns.csv."), left)
+
+
+SHOWN = """\
+@home/var/lib/buttervolume/snapshots/www@2026-09-02T10:00:00.000000
+\tName: \t\t\twww@2026-09-02T10:00:00.000000
+\tUUID: \t\t\t63c084af-fc1e-0942-9307-2146d11d43a2
+\tParent UUID: \t\t-
+\tReceived UUID: \t\t7cc405e8-abc2-d849-acd4-5f22acc780e0
+\tCreation time: \t\t2026-09-02 11:02:00 +0200
+\tSubvolume ID: \t\t69929
+\tGeneration: \t\t1923607
+\tGen at creation: \t1923607
+\tParent ID: \t\t961
+\tTop level ID: \t\t961
+\tFlags: \t\t\treadonly
+\tSend transid: \t\t1923605
+\tSend time: \t\t2026-09-02 11:02:00 +0200
+\tReceive transid: \t1923607
+\tReceive time: \t\t2026-09-02 11:02:00 +0200
+\tSnapshot(s):
+\t\t\t\tsnapshots/www@2026-09-02T10:00:00.000000@node2
+\tQuota group:\t\tn/a
+@home/var/lib/buttervolume/snapshots/www@2026-09-02T09:00:00.000000
+\tName: \t\t\twww@2026-09-02T09:00:00.000000
+\tUUID: \t\t\t11111111-fc1e-0942-9307-2146d11d43a2
+\tParent UUID: \t\t-
+\tReceived UUID: \t\t-
+\tCreation time: \t\t2026-09-02 11:03:00 +0200
+\tSubvolume ID: \t\t69931
+\tGeneration: \t\t1923609
+\tGen at creation: \t1923609
+\tParent ID: \t\t961
+\tTop level ID: \t\t961
+\tFlags: \t\t\treadonly
+\tSnapshot(s):
+"""
+
+
+class TestBtrfsOutput(unittest.TestCase):
+    """What btrfs prints, read without touching a filesystem"""
+
+    def test_a_description_is_read_field_by_field(self):
+        shown = btrfs.parse_shows(SHOWN)
+        self.assertEqual(len(shown), 2)
+        self.assertEqual(shown[0]["Name"], "www@2026-09-02T10:00:00.000000")
+        self.assertEqual(shown[0]["Received UUID"], "7cc405e8-abc2-d849-acd4-5f22acc780e0")
+        self.assertEqual(shown[0]["Flags"], "readonly")
+        self.assertEqual(shown[0]["Quota group"], "n/a")
+        # the snapshots listed under a description are paths, not fields,
+        # even when a colon in their name makes them look like one
+        self.assertNotIn("snapshots/www@2026-09-02T10", shown[0])
+        self.assertEqual(shown[1]["Received UUID"], "-")
+
+    def test_a_listing_is_in_creation_order_and_says_what_was_received(self):
+        # the second one was created later, though its name says earlier
+        listed = btrfs.parse_listing(SHOWN)
+        self.assertEqual(
+            listed,
+            [
+                btrfs.Listed("www@2026-09-02T10:00:00.000000", 69929, True),
+                btrfs.Listed("www@2026-09-02T09:00:00.000000", 69931, False),
+            ],
+        )
+
+    def test_a_directory_holding_no_subvolume_is_an_empty_listing(self):
+        self.assertEqual(btrfs.parse_listing(""), [])
+
+    def test_a_description_missing_a_field_stops_everything(self):
+        # answering the other ones would be answering "less than there is"
+        with self.assertRaises(btrfs.BtrfsError):
+            btrfs.parse_listing("some/path\n\tName: \t\twww@t1\n\tFlags: \t\treadonly\n")
 
 
 @contextmanager

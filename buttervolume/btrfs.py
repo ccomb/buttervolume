@@ -8,12 +8,19 @@ below, and ``run_btrfs_send_receive`` in ``plugin.py``, which sends over SSH.
 
 Nothing here knows what a volume is, which is why ``BtrfsError`` lives here
 rather than with the errors the API answers with.
+
+What ``btrfs subvolume show`` prints is read here too, for one subvolume or
+for a whole directory of them, and read into ``Listed``: the name, the rank a
+subvolume was created at, and whether it arrived through ``btrfs receive``.
+That rank is how the plugin orders snapshots in time, because the date in a
+snapshot's name is the clock of whichever host took it.
 """
 
 import contextlib
 import os
 import tempfile
 import time
+from dataclasses import dataclass
 from subprocess import PIPE, CalledProcessError, Popen, TimeoutExpired
 from subprocess import run as _run
 
@@ -61,6 +68,122 @@ def run_safe(cmd, timeout, error=BtrfsError):
         raise error(f"Command could not be run: {' '.join(cmd)}\n{e}") from e
 
 
+# The fields ``btrfs subvolume show`` prints, one per line, before the list of
+# snapshots. Reading them by name rather than by line number keeps a version
+# that prints one more of them from shifting the others.
+SHOW_FIELDS = frozenset(
+    [
+        "Name",
+        "UUID",
+        "Parent UUID",
+        "Received UUID",
+        "Creation time",
+        "Subvolume ID",
+        "Generation",
+        "Gen at creation",
+        "Parent ID",
+        "Top level ID",
+        "Flags",
+        "Send transid",
+        "Send time",
+        "Receive transid",
+        "Receive time",
+        "Quota group",
+    ]
+)
+
+
+def parse_shows(text):
+    """The subvolumes described by this ``btrfs subvolume show`` output, one dict each.
+
+    Pure: the output of one call, or of several concatenated, which is how a
+    remote host describes a whole directory in a single command. Each
+    description opens with the path of the subvolume, unindented, and goes on
+    with indented ``Field: value`` lines. What follows ``Snapshot(s):`` is a
+    list of paths, not fields, and is left out.
+    """
+    shown = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        if not line[0].isspace():
+            shown.append({})
+            continue
+        field, _, value = line.strip().partition(":")
+        if shown and field in SHOW_FIELDS:
+            shown[-1][field] = value.strip()
+    return shown
+
+
+@dataclass(frozen=True)
+class Listed:
+    """A subvolume of a directory: its name, its rank, and whether it was received.
+
+    The rank is the subvolume id, which a filesystem hands out in creation
+    order, so it says in what order the subvolumes appeared there, whatever
+    their names say. A subvolume that arrived through ``btrfs receive`` carries
+    the id of the one it was sent from, and ``received`` says so; a writable
+    snapshot made from it does not inherit that mark, nor do the snapshots
+    taken from that writable one.
+    """
+
+    name: str
+    rank: int
+    received: bool
+
+
+def parse_listing(text):
+    """The subvolumes of a directory in creation order, read from their descriptions.
+
+    Pure: ``text`` is what ``listing_command`` prints, the ``show`` of every
+    subvolume of the directory. A description missing a field it should have
+    raises rather than being skipped, because a listing that is read wrong is
+    answered as a host holding less than it does.
+    """
+    listed = []
+    for shown in parse_shows(text):
+        try:
+            listed.append(
+                Listed(shown["Name"], int(shown["Subvolume ID"]), shown["Received UUID"] != "-")
+            )
+        except (KeyError, ValueError) as e:
+            raise BtrfsError(f"Unreadable subvolume description {shown}: {e}") from e
+    return sorted(listed, key=lambda s: s.rank)
+
+
+def listing_command(directory):
+    """The shell command that describes every subvolume of this directory.
+
+    Meant to run on another host over ssh, which is why it is a shell string:
+    ``cd`` fails when the directory is not there and the version check when
+    ``btrfs`` is not, and either failure reaches the caller as a non-zero
+    status, where an empty output only ever means a directory holding no
+    subvolume. A directory that is not a subvolume prints nothing, which is
+    what it is worth. The names never enter the command: the shell lists them
+    itself.
+    """
+    return (
+        f"cd {directory} && btrfs --version > /dev/null && "
+        '{ for s in */; do btrfs subvolume show "${s%/}" 2> /dev/null; done; true; }'
+    )
+
+
+def subvolumes_in(directory):
+    """The subvolumes of this directory, in the order they appeared there.
+
+    A directory that is not a subvolume is left out, the way ``list_volumes``
+    leaves it out of the volumes: it is not something ``btrfs`` made.
+    """
+    listed = []
+    for name in os.listdir(directory):
+        subvolume = Subvolume(os.path.join(directory, name))
+        if not subvolume.exists():
+            continue
+        shown = subvolume.show()
+        listed.append(Listed(name, int(shown["Subvolume ID"]), shown["Received UUID"] != "-"))
+    return sorted(listed, key=lambda s: s.rank)
+
+
 class Subvolume:
     """basic wrapper around the CLI"""
 
@@ -69,33 +192,18 @@ class Subvolume:
         self.path = os.path.abspath(path)
 
     def show(self):
-        """Parse btrfs subvolume show output"""
+        """What ``btrfs subvolume show`` says of this subvolume, as a dict."""
         raw = run_safe(
             ["btrfs", "subvolume", "show", self.path],
             timeout=SHOW_TIMEOUT,
             error=BtrfsSubvolumeError,
         )
-        lines = raw.split("\n")
-
-        if len(lines) < 13:
+        shown = parse_shows(raw)
+        if len(shown) != 1:
             raise BtrfsSubvolumeError(
                 f"Unexpected output format from 'btrfs subvolume show {self.path}'"
             )
-
-        # Parse key-value pairs from lines 1-12
-        output = {}
-        for line in lines[1:12]:
-            if ":" in line:
-                k, v = line.split(":", 1)
-                output[k.strip()] = v.strip()
-
-        # Check for snapshots section
-        if len(lines) > 12 and "Snapshot(s):" in lines[12]:
-            output["Snapshot(s)"] = [s.strip() for s in lines[13:] if s.strip()]
-        else:
-            output["Snapshot(s)"] = []
-
-        return output
+        return shown[0]
 
     def exists(self):
         """Check if this path is a valid BTRFS subvolume"""
