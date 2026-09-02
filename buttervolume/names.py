@@ -175,33 +175,42 @@ def sent_snapshots(volume, host, names):
     )
 
 
-def _taken_snapshots(volume, names):
-    """The snapshots taken of this volume among these names, the traces left out.
+def taken_snapshots(volume, names):
+    """The snapshots of this volume among these names, in that order, traces left out.
 
     A trace of a send is named after the snapshot it was made from, plus the
-    target, so `www@2026-08-26T10:00:00.000000@node3` sorts after the snapshot
-    itself and would pass for the most recent one.
+    target, so `www@2026-08-26T10:00:00.000000@node3` would pass for a snapshot
+    of the volume. The order is the one the names come in, which is the order
+    they appeared on the host that listed them: the date in a name is what
+    that host's clock said, and two hosts need not agree on the time.
 
     Every name of this volume is read, and one that cannot be read raises
     rather than being dropped. These names come from another machine, and a
     listing we could not read must never be answered as a host with nothing.
     """
-    return [s for s in map(Snapshot.parse, snapshots_of(volume, names)) if not s.host]
+    return [
+        s
+        for s in map(Snapshot.parse, (n for n in names if n.startswith(volume + "@")))
+        if not s.host
+    ]
 
 
 def snapshot_to_fetch(volume, remote_names, local_names):
     """What to ask that host for, and the parent both sides already hold.
 
     The pair `(snapshot, parent)`, or None when the host holds no snapshot of
-    this volume. The parent is the most recent older snapshot the two sides
-    have in common, which is what an incremental transfer is built on; None
-    when they have none, and then the whole volume has to come over.
+    this volume. ``remote_names`` come in the order they appeared over there,
+    so the one to fetch is the last of them: the last that host took or
+    received, whatever the dates in the names say. The parent is the last
+    earlier one the two sides have in common, which is what an incremental
+    transfer is built on; None when they have none, and then the whole volume
+    has to come over.
 
     The parent is read from the two listings rather than from the trace of a
     send, which says what we once sent there. The question here is what that
     host has now, and it has just been asked.
     """
-    remote = _taken_snapshots(volume, remote_names)
+    remote = taken_snapshots(volume, remote_names)
     if not remote:
         return None
     # what we hold is read as plain names, none of which has to make sense: a

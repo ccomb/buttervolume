@@ -282,17 +282,17 @@ def run_btrfs_receive(remote_host, remote_snapshot_path, remote_parent_path=None
 
 
 def snapshots_on_remote(remote_host, remote_path, port):
-    """The names this host keeps in that directory.
+    """The names this host keeps in that directory, in the order they appeared there.
 
     An empty answer means it answered and keeps nothing there. A host that
     could not answer raises instead, and is never read as a host with nothing:
     acting on "there is nothing over there" when nobody said so is how the
     good copy of a volume gets replaced by an older one.
 
-    The whole directory is listed rather than a `volume@*` pattern. The
-    pattern would carry a name into a shell on the other machine, and `ls`
-    leaves with the same non-zero status when nothing matches as when it
-    failed, which is exactly the difference this function exists to keep.
+    The whole directory is described rather than a `volume@*` pattern, which
+    would carry a name into a shell on the other machine. The order is the one
+    the filesystem over there hands out, so the last name is the last snapshot
+    that host took or received, whatever its clock wrote in the name.
     """
     validate_hostname(remote_host)
     ssh_cmd = [
@@ -302,7 +302,7 @@ def snapshots_on_remote(remote_host, remote_path, port):
         "-o",
         "StrictHostKeyChecking=no",
         remote_host,
-        f"ls -1 {remote_path}",
+        btrfs.listing_command(remote_path),
     ]
     try:
         listing = subprocess.run(ssh_cmd, capture_output=True, timeout=REMOTE_TIMEOUT)
@@ -318,7 +318,7 @@ def snapshots_on_remote(remote_host, remote_path, port):
     # nothing is decoded strictly: a name we cannot read is one this host
     # should not have written, and it is refused later by name rather than
     # here by an error nobody expected
-    return listing.stdout.decode(errors="replace").splitlines()
+    return [s.name for s in btrfs.parse_listing(listing.stdout.decode(errors="replace"))]
 
 
 @route("/Plugin.Activate")

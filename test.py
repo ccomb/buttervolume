@@ -2036,14 +2036,23 @@ class TestNames(unittest.TestCase):
 class TestWhatToFetch(unittest.TestCase):
     """What to ask a host for, read from two listings and nothing else"""
 
-    def test_the_most_recent_snapshot_over_there_is_the_one_to_fetch(self):
+    def test_the_last_snapshot_that_appeared_over_there_is_the_one_to_fetch(self):
         remote = ["www@t1", "www@t2", "www@t3", "other@t9"]
         local = ["www@t1", "www@t2"]
         snapshot, parent = snapshot_to_fetch("www", remote, local)
         self.assertEqual(str(snapshot), "www@t3")
-        # the most recent one both sides already hold, which is what an
-        # incremental transfer is built on
+        # the last one both sides already hold, which is what an incremental
+        # transfer is built on
         self.assertEqual(str(parent), "www@t2")
+
+    def test_the_order_is_the_one_the_host_listed_and_not_the_dates_in_the_names(self):
+        # the host whose clock runs ahead wrote t9 first; what arrived last is
+        # the most recent, and the parent is the last one in common, not the
+        # one whose name says so
+        remote = ["www@t9", "www@t1", "www@t8", "www@t2"]
+        snapshot, parent = snapshot_to_fetch("www", remote, ["www@t9", "www@t1", "www@t8"])
+        self.assertEqual(str(snapshot), "www@t2")
+        self.assertEqual(str(parent), "www@t8")
 
     def test_a_trace_is_neither_fetched_nor_taken_for_a_parent(self):
         # that host keeps the traces of its own sends next to its snapshots,

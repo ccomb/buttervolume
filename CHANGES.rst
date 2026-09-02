@@ -12,6 +12,14 @@ CHANGELOG
   subvolume where a directory already stood. Removing it meant deleting the
   directory by hand.
 
+- A receive now fetches the last snapshot that appeared on the other host,
+  taken there or received there, instead of the one carrying the latest date
+  in its name. That date is written by the clock of whichever host took the
+  snapshot, so a host whose clock ran ahead passed its copy off as the most
+  recent one, and the README could only advise keeping the clocks in
+  agreement. BTRFS numbers subvolumes in the order it creates them, and that
+  order is what the other host is now asked for.
+
 - The plugin starts again, and the ``buttervolume`` command can be run inside
   it. A docker plugin is not started from the image configuration, so the
   ``PATH`` and ``PYTHONPATH`` the Dockerfile sets were not there and the

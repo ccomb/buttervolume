@@ -628,10 +628,10 @@ The other direction, for a host that wants back what another one holds::
 
 It names a **volume**, where ``send`` names a snapshot: whoever receives does
 not know what the other host has, which is precisely the question this asks.
-The most recent snapshot that host keeps of that volume is fetched into
-``/var/lib/buttervolume/snapshots``, and its name is printed. Only the
-difference crosses the network when the two hosts still share an older
-snapshot to build on.
+The last snapshot of that volume that appeared on that host, taken there or
+received there, is fetched into ``/var/lib/buttervolume/snapshots``, and its
+name is printed. Only the difference crosses the network when the two hosts
+still share an older snapshot to build on.
 
 The command **does not restore anything**. It brings a snapshot over, and
 which snapshot becomes the volume stays a separate, explicit decision::
@@ -646,10 +646,12 @@ it is. Only a host that answered and holds nothing is reported as holding
 nothing. Reading silence as "there is nothing over there" is how the good copy
 of a volume gets replaced by an older one.
 
-A snapshot carries the moment it was taken on the machine that took it, and
-"the most recent" is read from that name. A host whose clock runs ahead
-therefore passes its copy off as the most recent one, so the hosts replicating
-to each other should agree on the time.
+A snapshot carries in its name the moment it was taken, by the clock of the
+machine that took it, and that date is not what decides which one is the last.
+BTRFS numbers subvolumes in the order it creates them, and a received snapshot
+is created on arrival, so "the last one" is read from that order on the host
+that answers. A host whose clock runs ahead does not pass its copy off as the
+most recent one.
 
 
 Synchronize a volume from another host volume
