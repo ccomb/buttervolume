@@ -195,7 +195,7 @@ You must force disable it before reinstalling it (as explained in the docker doc
 Migrating from anybox/buttervolume
 **********************************
 
-The plugin was published as ``anybox/buttervolume`` up to version 3.12. A host
+The plugin was published as ``anybox/buttervolume`` up to version 3.10. A host
 still running it has nothing to move: both plugins keep the volumes, the
 snapshots, the schedule and the ssh keys in the same places under
 ``/var/lib/buttervolume``. What stands in the way is the name. Docker records
@@ -230,11 +230,14 @@ its old name, and the ``buttervolume`` command finds it: in the functions of
 **Take the new name.** Once the code is the current one, the volumes can be
 recreated under the new driver name, through a snapshot: a volume is deleted
 with its driver, so each one is snapshotted first, and restored under the new
-plugin afterwards. A volume referenced by a container cannot be deleted, even
-a stopped one, so the containers go too, and are recreated at the end with the
-new driver name in their configuration. The snapshots stay where they are and
-what they hold is not copied: the restored volume is a snapshot of the
-snapshot, so this costs neither time nor space::
+plugin afterwards. The containers are stopped before the snapshot, so that it
+holds a volume nobody is writing to. A volume referenced by a container cannot
+be deleted, even a stopped one, so the containers go too, and are recreated at
+the end with the new driver name in their configuration. The snapshots stay
+where they are and what they hold is not copied: the restored volume is a
+snapshot of the snapshot, so this costs neither time nor space. An ``SSH_PORT``
+set on the plugin goes away with it, so it is read first and given to the new
+one::
 
     set -e
     old=anybox/buttervolume:latest
@@ -243,13 +246,15 @@ snapshot, so this costs neither time nor space::
     bv () { sudo runc --root $RUNCROOT exec $(docker plugin inspect -f '{{.Id}}' $1) buttervolume "${@:2}"; }
     volumes=$(docker volume ls -q -f driver=$old)
     containers=$(for v in $volumes; do docker ps -aq -f volume=$v; done | sort -u)
+    port=$(docker plugin inspect -f '{{range .Settings.Env}}{{println .}}{{end}}' $old | grep ^SSH_PORT=)
+    [ -z "$containers" ] || docker stop $containers
     bv $old scheduled pause
     for v in $volumes; do bv $old snapshot $v; done
-    [ -z "$containers" ] || docker rm -f $containers
+    [ -z "$containers" ] || docker rm $containers
     for v in $volumes; do docker volume rm $v; done
-    docker plugin disable $old
+    docker plugin disable -f $old
     docker plugin rm $old
-    docker plugin install --grant-all-permissions $new
+    docker plugin install --grant-all-permissions $new $port
     for v in $volumes; do bv $new restore $v; done
     for v in $volumes; do docker volume create -d $new $v; done
     bv $new scheduled resume
@@ -262,12 +267,17 @@ line: compose refuses a volume it did not create itself, and creates it on
 **Moving to another host** does not need either of the above on the old host:
 the snapshot goes through ``btrfs send`` over ssh, which the old plugin speaks
 as well. Set up the ssh keys as described in `Replicate a snapshot to another
-host`_, then on the old host, with ``bv`` defined as above::
+host`_, then on the old host, with ``old``, ``bv`` and ``volumes`` defined as
+in the script above::
 
-    for v in $volumes; do bv $old send <newhost> $(bv $old snapshot $v); done
+    newhost=node2
+    for v in $volumes; do bv $old send $newhost $(bv $old snapshot $v); done
 
-and on the new host, which has never seen these volumes::
+and on the new host, which has never seen these volumes, with ``bv`` defined
+the same way and ``volumes`` naming what was sent::
 
+    new=ccomb/buttervolume:latest
+    volumes="www db"
     for v in $volumes; do bv $new restore $v; docker volume create -d $new $v; done
 
 The first send to a host carries the whole volume, since nothing over there

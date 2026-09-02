@@ -257,7 +257,10 @@ CHANGELOG
 - Updated dependencies
 - Fixed a freeze in front mode (#47)
 - Fixed critical #51 `schedule not working` 
-- Allow using volumes created with legacy plugin anybox/buttervolume (fix #52)
+- The ``buttervolume`` command run from the host finds the plugin when it is
+  installed under its former name ``anybox/buttervolume`` (#52). The volumes
+  themselves stay bound to the driver name they were created with; the manual
+  says how to move them.
 - Fixed deletion of old sent snapshots
 - Added support for compression (fix #36)
 - A failing BTRFS command is now always reported the same way, naming the command
