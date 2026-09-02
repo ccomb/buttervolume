@@ -325,7 +325,10 @@ class TestCase(unittest.TestCase):
         snap = jsonloads(self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body)[
             "Snapshot"
         ]
-        with patch("buttervolume.plugin.run_btrfs_send_receive") as mock_send:
+        # a host that answered and holds nothing, so the send goes ahead
+        with patch("buttervolume.plugin.snapshots_on_remote", return_value=[]), patch(
+            "buttervolume.plugin.run_btrfs_send_receive"
+        ) as mock_send:
             mock_send.side_effect = plugin.ReplicationTimeoutError("waited too long")
             resp = jsonloads(
                 self.app.post(
@@ -591,6 +594,82 @@ class TestCase(unittest.TestCase):
         btrfs.Subvolume(join(TEST_REMOTE_PATH, snapshot)).snapshot(join(VOLUMES_PATH, target))
         with open(join(VOLUMES_PATH, target, "foobar")) as f:
             self.assertEqual(f.read(), "foobar")
+
+    @unittest.skipIf(
+        os.environ.get("BUTTERVOLUME_LOCAL_TEST"), "SSH not available in local test mode"
+    )
+    def test_a_send_refuses_to_bury_a_history_it_never_saw(self):
+        """The last snapshot that appeared over there has to be one this host knows"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(name)
+        first = jsonloads(self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body)[
+            "Snapshot"
+        ]
+        self.app.post(
+            "/VolumeDriver.Snapshot.Send",
+            json.dumps({"Name": first, "Host": "localhost", "Test": True}),
+        )
+        # a trace that host keeps of its own sends is not a snapshot of the volume
+        btrfs.Subvolume(join(TEST_REMOTE_PATH, first)).snapshot(
+            join(TEST_REMOTE_PATH, f"{first}@node3"), readonly=True
+        )
+        self.write_a_byte(name)
+        second = jsonloads(
+            self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body
+        )["Snapshot"]
+        resp = jsonloads(
+            self.app.post(
+                "/VolumeDriver.Snapshot.Send",
+                json.dumps({"Name": second, "Host": "localhost", "Test": True}),
+            ).body
+        )
+        self.assertEqual(resp, {"Err": ""})
+
+        # another host ran the application meanwhile and sent its work over there
+        other = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        self.create_a_volume_with_a_file(other)
+        with open(join(VOLUMES_PATH, other, "foobar"), "w") as f:
+            f.write("the work of the other host")
+        foreign = f"{name}@2000-01-01T00:00:00.000000"
+        btrfs.Subvolume(join(VOLUMES_PATH, other)).snapshot(
+            join(TEST_REMOTE_PATH, foreign), readonly=True
+        )
+        self.write_a_byte(name)
+        third = jsonloads(self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body)[
+            "Snapshot"
+        ]
+        resp = jsonloads(
+            self.app.post(
+                "/VolumeDriver.Snapshot.Send",
+                json.dumps({"Name": third, "Host": "localhost", "Test": True}),
+            ).body
+        )
+        self.assertIn(foreign, resp["Err"])
+        self.assertIn("buttervolume receive localhost", resp["Err"])
+        self.assertNotIn(third, os.listdir(TEST_REMOTE_PATH))
+
+        # a scheduled replication is refused the same way, and takes back the
+        # snapshot it took for the occasion, round after round
+        self.write_a_byte(name)
+        self.app.post(
+            "/VolumeDriver.Schedule",
+            json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 1}),
+        )
+        runjobs(SCHEDULE, True, last_runs=LAST_RUNS)
+        self.assertEqual(
+            sorted(s for s in os.listdir(SNAPSHOTS_PATH) if s.startswith(name + "@")),
+            sorted([first, second, third, f"{second}@localhost"]),
+        )
+        self.app.post(
+            "/VolumeDriver.Schedule",
+            json.dumps({"Name": name, "Action": "replicate:localhost", "Timer": 0}),
+        )
+
+        # the other host's work is whole over there: restoring it is the proof
+        target = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        btrfs.Subvolume(join(TEST_REMOTE_PATH, foreign)).snapshot(join(VOLUMES_PATH, target))
+        with open(join(VOLUMES_PATH, target, "foobar")) as f:
+            self.assertEqual(f.read(), "the work of the other host")
 
     def test_a_host_that_cannot_answer_is_not_read_as_an_empty_host(self):
         """A listing nobody could read is an error, never a host with nothing"""

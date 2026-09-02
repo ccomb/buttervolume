@@ -55,6 +55,7 @@ from buttervolume.names import (
     sent_snapshots,
     snapshot_to_fetch,
     snapshots_of,
+    taken_snapshots,
     validate_hostname,
     validate_snapshot_name,
     validate_volume_name,
@@ -500,6 +501,16 @@ def keep_trace(snapshot, remote_host):
             log.warning("Failed to delete old snapshot %s: %s", str(old), str(e))
 
 
+def knows(snapshot, remote_host):
+    """Whether this host holds this snapshot, or the trace of exchanging it with that host.
+
+    The trace is a snapshot of it, so a snapshot purged here after being sent
+    is still a snapshot this host has seen.
+    """
+    held = os.listdir(SNAPSHOTS_PATH)
+    return str(snapshot) in held or str(snapshot.sent_to(remote_host)) in held
+
+
 @route("/VolumeDriver.Snapshot.Send")
 def snapshot_send(req):
     """The last sent snapshot is remembered by adding a suffix with the target"""
@@ -535,6 +546,23 @@ def snapshot_send(req):
     latest = already_sent[-1].without_host() if already_sent else None
     parent_path = snapshotpath(str(latest)) if latest else None
     port = os.getenv("SSH_PORT", "1122")
+
+    # the last snapshot of this volume that appeared over there has to be one
+    # this host knows, or the volume over there has moved on without this
+    # host: another host sent it, or somebody restored it there. Sending over
+    # that would make this host's copy pass for the most recent one everywhere
+    # and bury the other history under it, so it is refused, and said. A host
+    # that holds nothing of the volume lets the first send through, and a
+    # volume at rest never gets here, so nothing is asked of a host at rest.
+    arrived = taken_snapshots(
+        snapshot.volume, snapshots_on_remote(remote_host, remote_snapshots, port)
+    )
+    if arrived and not knows(arrived[-1], remote_host):
+        raise ReplicationError(
+            f"{remote_host} holds {arrived[-1]}, which this host never saw: the volume "
+            f"there has moved on. Receive it first with `buttervolume receive {remote_host} "
+            f"{snapshot.volume}`, or delete it there"
+        )
 
     try:
         log.info("Sending snapshot %s to %s", snapshot_path, remote_host)

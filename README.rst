@@ -586,17 +586,25 @@ to live in ``/var/lib/buttervolume/snapshots`` and is replicated to the same pat
 the remote host.
 
 What the remote host already holds is read from the trace kept locally,
-named ``<volume>@<datetime>@<host>``, and nothing is asked of the remote host.
-That trace is written after each send, and after each receive from that host,
-since a snapshot that has just arrived from a host is a snapshot that host
-holds. So a snapshot whose trace is there is not sent a second time, and a
-copy deleted on the remote host behind Buttervolume's back goes unnoticed:
-delete the trace as well, and the next send carries the whole volume again.
+named ``<volume>@<datetime>@<host>``. That trace is written after each send,
+and after each receive from that host, since a snapshot that has just arrived
+from a host is a snapshot that host holds. So a snapshot whose trace is there
+is not sent a second time, and a copy deleted on the remote host behind
+Buttervolume's back goes unnoticed: delete the trace as well, and the next
+send carries the whole volume again.
 
-A replication scheduled on a volume at rest therefore costs nothing at all: the
-snapshot it would take is not taken, its trace says the remote host already has
-it, and nothing crosses the network. Replicating the same volume to two hosts
-every minute is a reasonable thing to schedule.
+Before a snapshot is sent, the remote host is asked what the last snapshot of
+that volume to appear there is. When that one is unknown here, neither held
+nor traced, the volume over there has moved on without this host: another
+host sent its work there, or somebody restored an older snapshot there. A send
+over that would make this host's copy pass for the most recent one on every
+host and bury the other history under it, so it is refused, and the error
+says which snapshot to receive first, or to delete over there.
+
+A replication scheduled on a volume at rest costs nothing at all: the snapshot
+it would take is not taken, its trace says the remote host already has it, and
+nothing crosses the network, not even that question. Replicating the same
+volume to two hosts every minute is a reasonable thing to schedule.
 
 
 ``<host>`` is the hostname or IP address of the remote host. The snapshot is

@@ -12,6 +12,16 @@ CHANGELOG
   subvolume where a directory already stood. Removing it meant deleting the
   directory by hand.
 
+- A send now refuses to bury a history it never saw. Before sending, the
+  remote host is asked what the last snapshot of the volume to appear there
+  is; when this host neither holds it nor holds the trace of exchanging it,
+  another host has sent its work there since, or somebody restored an older
+  snapshot there, and a send on top of that would pass this host's copy off
+  as the most recent one everywhere. The send is refused, the error names
+  the snapshot to receive first, and a scheduled replication that is refused
+  takes back the snapshot it took for the occasion and says so at every
+  round. A volume at rest sends nothing, so it asks nothing.
+
 - A restore no longer leaves a snapshot behind when the volume held nothing
   new. What the volume held is kept as a snapshot before it is replaced, and
   that snapshot is now the previous one when nothing changed since it, none
