@@ -12,6 +12,87 @@ CHANGELOG
   subvolume where a directory already stood. Removing it meant deleting the
   directory by hand.
 
+- A volume can ask for its scheduled jobs as it is created. An option named
+  after an action, ``-o replicate:node2=1``, writes that line in the
+  schedule of the host the volume is created on, when no line says the same
+  thing already; a line already there is left alone, paused or not, and none
+  is removed on its own. This is how a Docker Swarm service, with
+  ``volume-opt=replicate:node2=1``, says once what happens to its volume on
+  whatever host it lands on, including a host that kept the volume from an
+  earlier deployment. An option that is neither ``copyonwrite``,
+  ``compression`` nor an action is now refused, where it was ignored: an
+  option nobody read would leave a replication unscheduled and nothing said.
+
+- A replicated volume now follows its container from one host to the other.
+  On a volume with a ``replicate:<host>`` line scheduled, the first mount
+  asks that host for the last snapshot of the volume to appear there,
+  receives it, and restores it when it is the last to have appeared here and
+  came from another host; the last unmount snapshots the volume and sends
+  that snapshot. What the volume held is kept as a snapshot first. A host
+  that does not answer at mount refuses the mount, and pausing the line is
+  how to mount without asking. The README section "Move an application
+  between hosts" says the rest: what a crash keeps aside, why the clocks of
+  the hosts do not decide, and the thirty seconds Docker gives a mount.
+
+  **Every** ``replicate:<host>`` **line already in** ``schedule.csv`` **changes
+  meaning with this version**: the volumes it names start being brought to
+  what that host holds when a container starts, and sent to it when the
+  last one stops, and a replication host that is down keeps their
+  containers from starting. Pause the line, or delete it, for a volume that
+  must not.
+
+  While no container uses a volume here, each scheduled round of its
+  replication also fetches from the other host what appeared there since,
+  without restoring it, so that a mount receives a difference and not a
+  whole volume.
+
+  The scheduler's replication lock moves into the plugin, where the unmount
+  needs it too: a round finding a replication under way skips its turn as
+  before, where an unmount waits for it and then sends the final state.
+
+- ``buttervolume replicate <host> <volume>`` snapshots a volume and sends that
+  snapshot in one step, which is what a scheduled replication does at each
+  round, and what moving an application by hand needed as two commands. The
+  scheduler now asks the plugin for that one step, through the new
+  ``/VolumeDriver.Replicate`` endpoint, instead of a snapshot, a send and a
+  cleanup of its own. Which replications are under way is the plugin's
+  business from now on, and a round that finds one under way is skipped as
+  before.
+
+- A send now refuses to bury a history it never saw. Before sending, the
+  remote host is asked what the last snapshot of the volume to appear there
+  is; when this host neither holds it nor holds the trace of exchanging it,
+  another host has sent its work there since, or somebody restored an older
+  snapshot there, and a send on top of that would pass this host's copy off
+  as the most recent one everywhere. The send is refused, the error names
+  the snapshot to receive first, and a scheduled replication that is refused
+  takes back the snapshot it took for the occasion and says so at every
+  round. A volume at rest sends nothing, so it asks nothing.
+
+- A restore no longer leaves a snapshot behind when the volume held nothing
+  new. What the volume held is kept as a snapshot before it is replaced, and
+  that snapshot is now the previous one when nothing changed since it, none
+  at all when the volume was empty; and a restore of the snapshot the volume
+  already holds does nothing. The answer of ``/VolumeDriver.Snapshot.Restore``
+  always carries ``VolumeBackup``, naming the snapshot that holds what the
+  volume held or empty when it held nothing, and a new ``Restored`` field
+  saying whether the volume was replaced.
+
+- A snapshot is now compared with the last snapshot taken of the volume on
+  this host, in the order they were taken, and no longer with a snapshot
+  received from another host that happens to carry a later date. Such a
+  snapshot was never taken of this volume, and comparing with it made a host
+  at rest snapshot its stale volume again the minute after a fresher copy
+  arrived, then send that.
+
+- A receive now fetches the last snapshot that appeared on the other host,
+  taken there or received there, instead of the one carrying the latest date
+  in its name. That date is written by the clock of whichever host took the
+  snapshot, so a host whose clock ran ahead passed its copy off as the most
+  recent one, and the README could only advise keeping the clocks in
+  agreement. BTRFS numbers subvolumes in the order it creates them, and that
+  order is what the other host is now asked for.
+
 - The plugin starts again, and the ``buttervolume`` command can be run inside
   it. A docker plugin is not started from the image configuration, so the
   ``PATH`` and ``PYTHONPATH`` the Dockerfile sets were not there and the

@@ -34,8 +34,10 @@ uv run ruff check . && uv run ruff format .
 - **A snapshot only exists the day it was restored.** Any change to the
   snapshot, send or restore paths must be proven by a test that restores.
 - **Destruction stays deliberate.** Nothing deletes a volume or a snapshot on
-  its own initiative; only an explicit command or the purge pattern the user
-  asked for.
+  its own initiative; only an explicit command, the purge pattern the user
+  asked for, or the mount of a volume whose replication the user scheduled,
+  which keeps what the volume held as a snapshot before replacing it. The one
+  thing deleted without a copy is an empty volume.
 - **Fix the root cause, at the shared function.** Before editing a handler,
   check its siblings: one guard in a helper beats a guard in every caller.
 - **Pure inside, effects at the edges.** Pattern parsing, name validation and
@@ -53,8 +55,8 @@ uv run ruff check . && uv run ruff format .
 
 ## Commits and pull requests
 
-- Every change goes through a pull request, on a branch starting from `master`.
-  Never commit to `master` directly, and never open a pull request from a
+- Every change goes through a pull request, on a branch starting from `main`.
+  Never commit to `main` directly, and never open a pull request from a
   long-lived work branch that carries unrelated commits.
 - One pull request, one subject. If the description needs the word "and", it is
   two pull requests.

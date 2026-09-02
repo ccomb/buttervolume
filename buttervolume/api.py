@@ -155,6 +155,14 @@ def send(snapshot, host, test=False):
     return get_from(_post("/VolumeDriver.Snapshot.Send", payload, test), "") is not False
 
 
+def replicate(volume, host, test=False):
+    """Snapshot a volume and send that snapshot to a host, and answer its name."""
+    payload = {"Name": volume, "Host": host}
+    if test:
+        payload["Test"] = True
+    return get_from(_post("/VolumeDriver.Replicate", payload, test), "Snapshot")
+
+
 def receive(volume, host, test=False):
     """Fetch the last snapshot another host has of a volume, and answer its name."""
     payload = {"Name": volume, "Host": host}

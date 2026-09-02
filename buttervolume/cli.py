@@ -186,6 +186,13 @@ def send(args, test=False):
     return api.send(args.snapshot[0], args.host[0], test=test)
 
 
+def replicate(args, test=False):
+    res = api.replicate(args.volume[0], args.host[0], test=test)
+    if res:
+        print(res)
+    return res
+
+
 def receive(args, test=False):
     res = api.receive(args.volume[0], args.host[0], test=test)
     if res:
@@ -363,6 +370,16 @@ def main():
     parser_send.add_argument("host", metavar="host", nargs=1, help="Host to send the snapshot to")
     parser_send.add_argument("snapshot", metavar="snapshot", nargs=1, help="Snapshot to send")
 
+    parser_replicate = subparsers.add_parser(
+        "replicate", help="Snapshot a volume and send the snapshot to another host"
+    )
+    parser_replicate.add_argument(
+        "host", metavar="host", nargs=1, help="Host to send the snapshot to"
+    )
+    parser_replicate.add_argument(
+        "volume", metavar="volume", nargs=1, help="Volume to snapshot and send"
+    )
+
     parser_receive = subparsers.add_parser(
         "receive", help="Receive the last snapshot another host has of a volume"
     )
@@ -440,6 +457,7 @@ def main():
     parser_restore.set_defaults(func=restore)
     parser_clone.set_defaults(func=clone)
     parser_send.set_defaults(func=send)
+    parser_replicate.set_defaults(func=replicate)
     parser_receive.set_defaults(func=receive)
     parser_sync.set_defaults(func=sync)
     parser_remove.set_defaults(func=remove)
