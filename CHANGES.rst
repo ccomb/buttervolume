@@ -18,14 +18,16 @@ CHANGELOG
   the ``purge`` command refuses it and a schedule still runs it.
 
 - The manual now has a "Migrate to version 4" section, saying what this
-  version changes for a host running version 3. The entries below each
-  describe one change, and none of them says what an administrator has to
-  decide before upgrading: that every ``replicate:`` line already written
-  starts moving its volume between hosts, that a replication host which is
-  down then keeps a container from starting, that the first mount of a volume
-  this host never received may need more than the thirty seconds Docker
-  gives it, that the ssh host keys change, and that the first restart runs
-  every scheduled job once.
+  version changes for a host running version 3. What it holds is said in the
+  entries below too, but scattered over five of them, each written from the
+  point of view of the change it describes rather than of the administrator
+  about to upgrade. The section gathers them in the order one has to act:
+  every ``replicate:`` line already written starts moving its volume between
+  hosts, and a replication host which is down then keeps a container from
+  starting; the first mount of a volume this host never received may need
+  more than the thirty seconds Docker gives it; the ssh host keys change; a
+  send can now be refused; an unknown volume option is refused; and the first
+  restart runs every scheduled job once.
 
 - The manual explains how to leave ``anybox/buttervolume`` behind: an in
   place upgrade of the plugin that keeps its name and touches no volume, or a

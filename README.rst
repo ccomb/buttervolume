@@ -1170,10 +1170,16 @@ Two consequences are worth knowing before rather than after:
       docker plugin install --disable ccomb/buttervolume
       docker plugin enable --timeout 600 ccomb/buttervolume
 
-For a volume that must keep the old behaviour, pause its line before you
-upgrade, or delete it::
+There is no setting that keeps the periodic send without the handover: the
+two are the same line, and a volume either replicates the version 4 way or
+does not replicate. So a volume that must not change hands has its line
+paused before you upgrade, or deleted, and stops being replicated at all::
 
     buttervolume schedule replicate:node2 pause myvolume
+
+The copy on ``node2`` then ages where it stands. Take a snapshot of the
+volume and send it by hand, with ``buttervolume replicate node2 myvolume``,
+for as long as the line stays paused.
 
 **The ssh host keys change.** Up to 3.13 they were built into the image, so
 every installation of a given tag presented the same identity, and anyone could
@@ -1189,9 +1195,12 @@ recording a key that is now public. Clear it::
 
     ssh-keygen -R '[node2]:1122' -f /var/lib/buttervolume/ssh/known_hosts
 
-A host where you wired a stricter ssh configuration of your own, under
-``/var/lib/buttervolume/ssh/config``, will refuse to connect until you do.
-Restart the Docker daemon after changing anything under ``ssh/``.
+Clearing it takes effect at once, and needs no restart: each transfer starts
+a new ``ssh``, which reads the file then. Note that writing
+``StrictHostKeyChecking yes`` in ``/var/lib/buttervolume/ssh/config`` does not
+make the plugin stricter, and never has: ssh keeps the first value it is given
+for a parameter, and the plugin passes the option on the command line, which
+comes before that file.
 
 **A send can now be refused.** Before sending, the remote host is asked which
 snapshot of the volume last appeared there. When this host has never seen it,
@@ -1217,8 +1226,9 @@ breaks, and ``buttervolume scheduled --auto-convert-old-patterns`` rewrites
 them.
 
 **Python 3.11 at least**, if you install Buttervolume as a Python distribution
-rather than as a plugin. The plugin image has been carrying 3.11 or later all
-along, so this concerns a local installation only.
+rather than as a plugin. The plugin image has carried 3.11 or later since 3.12,
+where it moved from Debian bullseye to Debian 12, so this concerns a local
+installation only.
 
 
 Migrate to version 3
