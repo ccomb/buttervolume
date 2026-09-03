@@ -105,7 +105,9 @@ You first need to create a root filesystem for the plugin, using the provided Do
     git clone https://github.com/ccomb/buttervolume
     ./build.sh
 
-By default the plugin is built for the latest commit (HEAD). You can build another version by specifying it like this::
+By default the plugin is built from the latest commit and tagged
+``ccomb/buttervolume:latest``. You can build another version, which is tagged
+after it, by specifying it like this::
 
     ./build.sh 3.7
 
@@ -118,10 +120,10 @@ Note that this option is only relevant if you use the replication feature betwee
 Now you can enable the plugin, which should start buttervolume in the plugin
 container::
 
-    docker plugin enable ccomb/buttervolume:HEAD
+    docker plugin enable ccomb/buttervolume:latest
 
 You can check it is responding by defining `the buttervolume function`_, with
-``ccomb/buttervolume:HEAD`` as the tag you enabled, and running::
+the tag you enabled, and running::
 
     buttervolume scheduled
 
@@ -959,10 +961,14 @@ Here are a few examples of retention patterns:
 
 - ``2h``
     keep all snapshots during the last two hours, then delete older snapshots.
-    Older versions of Buttervolume wrote this pattern ``2h:2h``. It is still
-    read, and purges exactly like ``2h``, but ``buttervolume scheduled``
-    reports it as deprecated, and ``buttervolume scheduled
-    --auto-convert-old-patterns`` rewrites it in the schedule.
+    Older versions of Buttervolume wrote this pattern ``2h:2h``, and the three
+    ways of purging do not treat that spelling alike. The ``buttervolume
+    purge`` command **refuses** it, and names ``2h`` as the pattern to use
+    instead. A schedule line still accepts it as it is written, and the
+    scheduler converts it at each run, purging exactly as ``2h`` does and
+    logging a warning. ``buttervolume scheduled`` reports such a line as
+    deprecated, and ``buttervolume scheduled --auto-convert-old-patterns``
+    rewrites it.
 
 Whatever the pattern says, a purge never deletes what a replication needs: the
 trace of the last send to a host, named ``<volume>@<datetime>@<host>``, and the
@@ -1078,14 +1084,17 @@ point it somewhere else with ``BUTTERVOLUME_TEST_DIR``, and read `Working
 without a BTRFS partition`_ if you have none. The tests that replicate over ssh
 are skipped, since there is no ssh server outside the plugin.
 
-``./test.sh`` builds the plugin and runs the same suite inside it, which is the
-only way the replication tests actually run::
+``./test.sh`` builds the plugin image and runs the same suite inside it, which
+is the only way the replication tests actually run::
 
-    ./test.sh        # the current commit
-    ./test.sh 3.7    # another version
+    ./test.sh
 
-It refuses to start while you have uncommitted changes, because it tests what
-``git archive`` produces and not your working tree.
+It refuses to start while you have uncommitted changes. Your checkout is
+mounted into the container and is what the suite imports, so that guard is what
+keeps the code being tested and the code the image was built from in agreement.
+For the same reason, the optional argument, ``./test.sh 3.7``, chooses the
+version installed in the image, not the code the tests run against, which is
+always your checkout.
 
 The continuous integration runs both.
 
@@ -1109,7 +1118,11 @@ directories the plugin expects there::
 
 The mount does not survive a reboot until you write it in ``/etc/fstab``::
 
-    /var/lib/docker/btrfs.img /var/lib/buttervolume btrfs loop 0 0
+    /var/lib/docker/btrfs.img /var/lib/buttervolume btrfs loop,nofail 0 0
+
+``nofail`` matters here: without it, a boot that cannot mount this file fails
+``local-fs.target`` and leaves the machine in emergency mode. A file you may
+delete one day has no business stopping a boot.
 
 To run the test suite rather than the plugin, no such mount is needed at
 ``/var/lib/buttervolume``: mount the file anywhere and name it::
@@ -1117,8 +1130,9 @@ To run the test suite rather than the plugin, no such mount is needed at
     sudo mount -o loop /var/lib/docker/btrfs.img /mnt/btrfs
     BUTTERVOLUME_TEST_DIR=/mnt/btrfs/test ./test_local.sh
 
-Once you are done, stop docker before unmounting, so that it does not hold the
-volumes open, and you find your previous docker volumes back::
+Once you are done, remove the ``/etc/fstab`` line if you wrote one, then stop
+docker before unmounting, so that it does not hold the volumes open, and you
+find your previous docker volumes back::
 
     systemctl stop docker
     umount /var/lib/buttervolume
