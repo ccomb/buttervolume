@@ -959,9 +959,10 @@ Here are a few examples of retention patterns:
 
 - ``2h``
     keep all snapshots during the last two hours, then delete older snapshots.
-    Older versions of Buttervolume wrote this pattern ``2h:2h``, which is now
-    refused, and which ``buttervolume scheduled --auto-convert-old-patterns``
-    rewrites in the schedule.
+    Older versions of Buttervolume wrote this pattern ``2h:2h``. It is still
+    read, and purges exactly like ``2h``, but ``buttervolume scheduled``
+    reports it as deprecated, and ``buttervolume scheduled
+    --auto-convert-old-patterns`` rewrites it in the schedule.
 
 Whatever the pattern says, a purge never deletes what a replication needs: the
 trace of the last send to a host, named ``<volume>@<datetime>@<host>``, and the
