@@ -2756,6 +2756,22 @@ class TestWhatAPurgeCondemns(unittest.TestCase):
             [names[h] for h in (0, 1, 2, 3, 7, 11, 15, 19)],
         )
 
+    def test_a_snapshot_too_old_to_keep_does_not_take_a_live_timeframe(self):
+        """A timeframe is a slice of the calendar, so the slice the pattern
+        ends inside holds both a snapshot too old to keep and a younger one
+        still inside the segment. Letting the first claim the slice would
+        delete the second as its duplicate, and spare nothing at all."""
+        one_oclock = self.now + timedelta(hours=1)
+        names = [
+            f"www@{(one_oclock - timedelta(hours=h, minutes=40)).strftime(DTFORMAT)}"
+            for h in range(26)
+        ]
+        condemned = compute_purges(names, Pattern.parse("4h:1d"), one_oclock, DTFORMAT)
+        # names[24] is forty minutes older than the day the pattern keeps, and
+        # names[23] is the oldest one still inside it, in the same four hour slice
+        self.assertIn(names[24], condemned)
+        self.assertNotIn(names[23], condemned)
+
     def test_each_component_of_a_pattern_thins_its_own_age_segment(self):
         """The counts the plugin test used to make on a real filesystem, where
         they depended on the hour the suite ran at"""
@@ -2763,11 +2779,11 @@ class TestWhatAPurgeCondemns(unittest.TestCase):
         trace, undated = names[-2], names[-1]
         self.assertEqual(
             self.spared(names, "2h:4h:8h:16h"),
-            [names[h] for h in (0, 1, 2, 4, 8, 12)] + [trace, undated],
+            [names[h] for h in (0, 1, 2, 4, 8, 12, 16)] + [trace, undated],
         )
         self.assertEqual(
             self.spared(names, "60m:120m:180m:240m:300m"),
-            [names[h] for h in (0, 1, 2, 3, 4)] + [trace, undated],
+            [names[h] for h in (0, 1, 2, 3, 4, 5)] + [trace, undated],
         )
 
 

@@ -84,7 +84,6 @@ def compute_purges(snapshots, pattern, now, dtformat):
     Never the trace of a send, nor the snapshot it was made from: whatever
     the pattern says, a replication keeps the parent its next send needs.
     """
-    snapshots = sorted(snapshots)
     # a purge does not delete what a send still needs: the trace of a send, and
     # the snapshot it was made from, which is the parent the next incremental
     # send is built on. Both are taken out of the answer rather than out of the
@@ -126,13 +125,20 @@ def compute_purges(snapshots, pattern, now, dtformat):
                 # Only 70 and 90 are inside the age_segment (60, 180)
                 if age > age_segment[0] < max_age or age < age_segment[1]:
                     continue
+                # Past the oldest duration of the pattern everything dies, and
+                # without claiming a timeframe: a timeframe is a slice of the
+                # calendar, so it can hold both a snapshot too old to keep and
+                # a younger one still inside the segment, and the second would
+                # be deleted as a duplicate of the first with nothing spared.
+                if age > max_age:
+                    purge_list.append(s)
+                    continue
                 # Now get the timeframe number of the snapshot: the slice of
                 # the calendar it was taken in, as wide as this segment steps,
                 # and not the slice its age falls in today.
-                timeframe = (taken - EPOCH) // timedelta(minutes=1) // age_segment[1]
+                timeframe = (taken - EPOCH) // timedelta(minutes=age_segment[1])
                 # delete if we already had a snapshot in the same timeframe
-                # or if the snapshot is very old
-                if timeframe == last_timeframe or age > max_age:
+                if timeframe == last_timeframe:
                     purge_list.append(s)
                 last_timeframe = timeframe
     return [s for s in purge_list if s not in needed]
