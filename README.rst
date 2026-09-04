@@ -95,58 +95,6 @@ other two::
     sudo mkdir -p /var/lib/buttervolume/ssh
 
 
-Build and run as a contributor
-******************************
-
-If you want to be a contributor, read this chapter. Otherwise jump to the next section.
-
-You first need to create a root filesystem for the plugin, using the provided Dockerfile::
-
-    git clone https://github.com/ccomb/buttervolume
-    ./build.sh
-
-By default the plugin is built from the latest commit and tagged
-``ccomb/buttervolume:latest``. You can build another version, which is tagged
-after it, by specifying it like this::
-
-    ./build.sh 3.7
-
-At this point, you can set the SSH_PORT option for the plugin by running::
-
-    docker plugin set ccomb/buttervolume SSH_PORT=1122
-
-Note that this option is only relevant if you use the replication feature between two nodes.
-
-Now you can enable the plugin, which should start buttervolume in the plugin
-container::
-
-    docker plugin enable ccomb/buttervolume:latest
-
-You can check it is responding by defining `the buttervolume function`_, with
-the tag you enabled, and running::
-
-    buttervolume scheduled
-
-Increase the log level by writing a `/var/lib/buttervolume/config/config.ini` file with::
-
-    [DEFAULT]
-    TIMER = 120
-
-Then check the logs with::
-
-    sudo journalctl -f -u docker.service
-
-You can also locally install and run the plugin in the foreground with::
-
-    uv venv
-    uv sync --extra dev
-    sudo .venv/bin/buttervolume run
-
-Then you can use the buttervolume CLI that was installed in developer mode in the venv::
-
-    .venv/bin/buttervolume --version
-
-
 Install and run as a user
 *************************
 
@@ -192,240 +140,6 @@ You must force disable it before reinstalling it (as explained in the docker doc
     docker plugin disable -f ccomb/buttervolume
     docker plugin rm -f ccomb/buttervolume
     docker plugin install ccomb/buttervolume
-
-
-Migrating from anybox/buttervolume
-**********************************
-
-The plugin was published as ``anybox/buttervolume`` up to version 3.10. A host
-still running it has nothing to move: both plugins keep the volumes, the
-snapshots, the schedule and the ssh keys in the same places under
-``/var/lib/buttervolume``. What stands in the way is the name. Docker records
-the driver of each volume when the volume is created, and that name cannot be
-changed afterwards, so a volume created with ``anybox/buttervolume:latest``
-works only with a plugin of that name.
-
-This leaves two ways, and the second one starts with the first.
-
-**Keep the name, replace the code.** Docker can upgrade a plugin in place: the
-plugin keeps its name and its id, and gets the rootfs of another image. The
-volumes are not touched, the containers only have to be stopped for the
-duration of the upgrade, and nothing changes in the compose files::
-
-    set -e
-    old=anybox/buttervolume:latest
-    new=ccomb/buttervolume:latest
-    volumes=$(docker volume ls -q -f driver=$old)
-    containers=$(for v in $volumes; do docker ps -q -f volume=$v; done | sort -u)
-    [ -z "$containers" ] || docker stop $containers
-    docker plugin disable -f $old
-    docker plugin upgrade --skip-remote-check --grant-all-permissions $old $new
-    docker plugin enable $old
-    [ -z "$containers" ] || docker start $containers
-
-``--skip-remote-check`` is what allows the new image to carry another name
-than the plugin it replaces. From there the plugin is the current one under
-its old name, and the ``buttervolume`` command finds it: in the functions of
-`Install and run as a user`_, replace ``ccomb/buttervolume:latest`` with
-``anybox/buttervolume:latest``.
-
-**Take the new name.** Once the code is the current one, the volumes can be
-recreated under the new driver name, through a snapshot: a volume is deleted
-with its driver, so each one is snapshotted first, and restored under the new
-plugin afterwards. The containers are stopped before the snapshot, so that it
-holds a volume nobody is writing to. A volume referenced by a container cannot
-be deleted, even a stopped one, so the containers go too, and are recreated at
-the end with the new driver name in their configuration. The snapshots stay
-where they are and what they hold is not copied: the restored volume is a
-snapshot of the snapshot, so this costs neither time nor space. An ``SSH_PORT``
-set on the plugin goes away with it, so it is read first and given to the new
-one::
-
-    set -e
-    old=anybox/buttervolume:latest
-    new=ccomb/buttervolume:latest
-    RUNCROOT=/run/docker/runtime-runc/plugins.moby/ # or /run/docker/plugins/runtime-root/plugins.moby/
-    bv () { sudo runc --root $RUNCROOT exec $(docker plugin inspect -f '{{.Id}}' $1) buttervolume "${@:2}"; }
-    volumes=$(docker volume ls -q -f driver=$old)
-    containers=$(for v in $volumes; do docker ps -aq -f volume=$v; done | sort -u)
-    port=$(docker plugin inspect -f '{{range .Settings.Env}}{{println .}}{{end}}' $old | grep ^SSH_PORT=)
-    [ -z "$containers" ] || docker stop $containers
-    bv $old scheduled pause
-    for v in $volumes; do bv $old snapshot $v; done
-    [ -z "$containers" ] || docker rm $containers
-    for v in $volumes; do docker volume rm $v; done
-    docker plugin disable -f $old
-    docker plugin rm $old
-    docker plugin install --grant-all-permissions $new $port
-    for v in $volumes; do bv $new restore $v; done
-    for v in $volumes; do docker volume create -d $new $v; done
-    bv $new scheduled resume
-
-Then change the driver of the volumes in the compose files, and start the
-containers again. With docker compose, leave out the ``docker volume create``
-line: compose refuses a volume it did not create itself, and creates it on
-``docker compose up`` over the subvolume the restore has just put in place.
-
-**Moving to another host** does not need either of the above on the old host:
-the snapshot goes through ``btrfs send`` over ssh, which the old plugin speaks
-as well. Set up the ssh keys as described in `Replicate a snapshot to another
-host`_, then on the old host, with ``old``, ``bv`` and ``volumes`` defined as
-in the script above::
-
-    newhost=node2
-    for v in $volumes; do bv $old send $newhost $(bv $old snapshot $v); done
-
-and on the new host, which has never seen these volumes, with ``bv`` defined
-the same way and ``volumes`` naming what was sent::
-
-    new=ccomb/buttervolume:latest
-    volumes="www db"
-    for v in $volumes; do bv $new restore $v; docker volume create -d $new $v; done
-
-The first send to a host carries the whole volume, since nothing over there
-can serve as a parent; the following ones carry the difference. The old
-snapshots stay on the old host, and nothing depends on them.
-
-
-Using buttervolume CLI in a container
-*************************************
-
-If you need to run the buttervolume CLI from within a Docker container, you need to ensure proper access to the Docker daemon and plugin sockets.
-
-**Method 1: Mount required directories**::
-
-    docker run --rm -it \
-      -v /var/run/docker.sock:/var/run/docker.sock \
-      -v /run/docker/plugins:/run/docker/plugins \
-      your-container-with-buttervolume buttervolume scheduled
-
-**Method 2: Override socket path**::
-
-    # If you know the exact socket path
-    docker run --rm -it \
-      -v /var/run/docker.sock:/var/run/docker.sock \
-      -v /run/docker/plugins:/run/docker/plugins \
-      -e BUTTERVOLUME_SOCKET=/run/docker/plugins/<plugin-id>/btrfs.sock \
-      your-container-with-buttervolume buttervolume scheduled
-
-**Creating a CLI container**::
-
-    # Dockerfile
-    FROM python:alpine
-    RUN pip install buttervolume
-    COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker
-
-    # Usage
-    docker build -t buttervolume-cli .
-    docker run --rm -it \
-      -v /var/run/docker.sock:/var/run/docker.sock \
-      -v /run/docker/plugins:/run/docker/plugins \
-      buttervolume-cli buttervolume scheduled
-
-
-Migrating existing Docker volumes
-**********************************
-
-To migrate existing Docker volumes to buttervolume, the approach depends on whether your volumes are already on a BTRFS filesystem.
-
-**If /var/lib/docker/volumes is on the same BTRFS partition as /var/lib/buttervolume:**
-
-You can efficiently move or snapshot existing volumes::
-
-    # Stop containers using the volumes first
-    docker stop <container-using-volume>
-    
-    # Method 1: Move the volume (fastest)
-    sudo mv /var/lib/docker/volumes/<volume-name>/_data /var/lib/buttervolume/volumes/<volume-name>
-    
-    # Method 2: Create BTRFS snapshot (preserves original)
-    sudo btrfs subvolume snapshot /var/lib/docker/volumes/<volume-name>/_data /var/lib/buttervolume/volumes/<volume-name>
-
-**If /var/lib/docker/volumes is NOT on BTRFS:**
-
-You need to copy the data::
-
-    # Stop containers using the volumes first
-    docker stop <container-using-volume>
-    
-    # Create buttervolume and copy data
-    docker volume create -d ccomb/buttervolume:latest <volume-name>
-    sudo cp -ar /var/lib/docker/volumes/<volume-name>/_data/* /var/lib/buttervolume/volumes/<volume-name>/
-    
-    # Remove old volume after verifying data integrity
-    docker volume rm <volume-name>
-
-**Update your containers:**
-
-After migration, update your containers to use the new buttervolume driver::
-
-    # In docker-compose.yml
-    volumes:
-      my-data:
-        driver: ccomb/buttervolume:latest
-    
-    # Or with docker run
-    docker run -v my-data:/data --volume-driver=ccomb/buttervolume:latest myimage
-
-**Verification:**
-
-Test that your migrated volumes work correctly before removing the originals::
-
-    # Check volume exists
-    docker volume ls -f driver=ccomb/buttervolume:latest
-    
-    # Test with a temporary container
-    docker run --rm -v <volume-name>:/test --volume-driver=ccomb/buttervolume:latest alpine ls -la /test
-
-
-Configure
-*********
-
-You can configure the following variables:
-
-    * ``DRIVERNAME``: the full name of the driver (with the tag)
-    * ``VOLUMES_PATH``: the path where the BTRFS volumes are located
-    * ``SNAPSHOTS_PATH``: the path where the BTRFS snapshots are located
-    * ``TEST_REMOTE_PATH``: the path during unit tests where the remote BTRFS snapshots are located
-    * ``SCHEDULE``: the path of the scheduler configuration
-    * ``LAST_RUNS``: the path of the file where the scheduler writes down the date
-      of the last successful run of each scheduled job, so that a restart does not
-      run everything again
-    * ``RUNPATH``: the path of the docker run directory (/run/docker)
-    * ``SOCKET``: the path of the unix socket where buttervolume listens
-    * ``TIMER``: the number of seconds between two runs of the scheduler jobs
-    * ``SEND_TIMEOUT``: the number of seconds a snapshot send to another node may take before being killed
-    * ``DTFORMAT``: the format of the datetime in the logs and in the snapshot
-      names. As a snapshot name has to remain usable in a path and in a command,
-      the format may only produce letters, digits, dot, colon, underscore and dash
-    * ``LOGLEVEL``: the Python log level (INFO, DEBUG, etc.)
-
-The configuration can be done in this order of priority:
-
-    #. from an environment variable prefixed with ``BUTTERVOLUME_`` (ex: ``BUTTERVOLUME_TIMER=120``)
-    #. from the [DEFAULT] section of the ``/etc/buttervolume/config.ini`` file
-       inside the container or ``/var/lib/buttervolume/config/config.ini`` on the
-       host
-
-Example of ``config.ini`` file::
-
-    [DEFAULT]
-    TIMER = 120
-
-If none of this is configured, the following default values are used:
-
-    * ``DRIVERNAME = ccomb/buttervolume:latest``
-    * ``VOLUMES_PATH = /var/lib/buttervolume/volumes/``
-    * ``SNAPSHOTS_PATH = /var/lib/buttervolume/snapshots/``
-    * ``TEST_REMOTE_PATH = /var/lib/buttervolume/received/``
-    * ``SCHEDULE = /etc/buttervolume/schedule.csv``
-    * ``LAST_RUNS = /var/lib/buttervolume/lastruns.csv``
-    * ``RUNPATH = /run/docker``
-    * ``SOCKET = $RUNPATH/plugins/btrfs.sock`` # only if run manually
-    * ``TIMER = 60``
-    * ``SEND_TIMEOUT = 600``
-    * ``DTFORMAT = %Y-%m-%dT%H:%M:%S.%f``
-    * ``LOGLEVEL = INFO``
 
 
 Usage
@@ -1067,6 +781,110 @@ The global job pause/resume feature is implemented separately from the
 individual job pause/resume. So it will not affect your individual
 pause/resume settings.
 
+Configure
+*********
+
+You can configure the following variables:
+
+    * ``DRIVERNAME``: the full name of the driver (with the tag)
+    * ``VOLUMES_PATH``: the path where the BTRFS volumes are located
+    * ``SNAPSHOTS_PATH``: the path where the BTRFS snapshots are located
+    * ``TEST_REMOTE_PATH``: the path during unit tests where the remote BTRFS snapshots are located
+    * ``SCHEDULE``: the path of the scheduler configuration
+    * ``LAST_RUNS``: the path of the file where the scheduler writes down the date
+      of the last successful run of each scheduled job, so that a restart does not
+      run everything again
+    * ``RUNPATH``: the path of the docker run directory (/run/docker)
+    * ``SOCKET``: the path of the unix socket where buttervolume listens
+    * ``TIMER``: the number of seconds between two runs of the scheduler jobs
+    * ``SEND_TIMEOUT``: the number of seconds a snapshot send to another node may take before being killed
+    * ``DTFORMAT``: the format of the datetime in the logs and in the snapshot
+      names. As a snapshot name has to remain usable in a path and in a command,
+      the format may only produce letters, digits, dot, colon, underscore and dash
+    * ``LOGLEVEL``: the Python log level (INFO, DEBUG, etc.)
+
+The configuration can be done in this order of priority:
+
+    #. from an environment variable prefixed with ``BUTTERVOLUME_`` (ex: ``BUTTERVOLUME_TIMER=120``)
+    #. from the [DEFAULT] section of the ``/etc/buttervolume/config.ini`` file
+       inside the container or ``/var/lib/buttervolume/config/config.ini`` on the
+       host
+
+Example of ``config.ini`` file::
+
+    [DEFAULT]
+    TIMER = 120
+
+If none of this is configured, the following default values are used:
+
+    * ``DRIVERNAME = ccomb/buttervolume:latest``
+    * ``VOLUMES_PATH = /var/lib/buttervolume/volumes/``
+    * ``SNAPSHOTS_PATH = /var/lib/buttervolume/snapshots/``
+    * ``TEST_REMOTE_PATH = /var/lib/buttervolume/received/``
+    * ``SCHEDULE = /etc/buttervolume/schedule.csv``
+    * ``LAST_RUNS = /var/lib/buttervolume/lastruns.csv``
+    * ``RUNPATH = /run/docker``
+    * ``SOCKET = $RUNPATH/plugins/btrfs.sock`` # only if run manually
+    * ``TIMER = 60``
+    * ``SEND_TIMEOUT = 600``
+    * ``DTFORMAT = %Y-%m-%dT%H:%M:%S.%f``
+    * ``LOGLEVEL = INFO``
+
+
+Build and run as a contributor
+******************************
+
+This chapter and the two that follow are about working on Buttervolume itself.
+A reader who only uses the plugin has already read what they need, and the
+chapters after those are the migrations.
+
+You first need to create a root filesystem for the plugin, using the provided Dockerfile::
+
+    git clone https://github.com/ccomb/buttervolume
+    ./build.sh
+
+By default the plugin is built from the latest commit and tagged
+``ccomb/buttervolume:latest``. You can build another version, which is tagged
+after it, by specifying it like this::
+
+    ./build.sh 3.7
+
+At this point, you can set the SSH_PORT option for the plugin by running::
+
+    docker plugin set ccomb/buttervolume SSH_PORT=1122
+
+Note that this option is only relevant if you use the replication feature between two nodes.
+
+Now you can enable the plugin, which should start buttervolume in the plugin
+container::
+
+    docker plugin enable ccomb/buttervolume:latest
+
+You can check it is responding by defining `the buttervolume function`_, with
+the tag you enabled, and running::
+
+    buttervolume scheduled
+
+Increase the log level by writing a `/var/lib/buttervolume/config/config.ini` file with::
+
+    [DEFAULT]
+    TIMER = 120
+
+Then check the logs with::
+
+    sudo journalctl -f -u docker.service
+
+You can also locally install and run the plugin in the foreground with::
+
+    uv venv
+    uv sync --extra dev
+    sudo .venv/bin/buttervolume run
+
+Then you can use the buttervolume CLI that was installed in developer mode in the venv::
+
+    .venv/bin/buttervolume --version
+
+
 Testing
 *******
 
@@ -1138,6 +956,190 @@ find your previous docker volumes back::
     umount /var/lib/buttervolume
     systemctl start docker
     rm /var/lib/docker/btrfs.img
+
+
+Using buttervolume CLI in a container
+*************************************
+
+If you need to run the buttervolume CLI from within a Docker container, you need to ensure proper access to the Docker daemon and plugin sockets.
+
+**Method 1: Mount required directories**::
+
+    docker run --rm -it \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      -v /run/docker/plugins:/run/docker/plugins \
+      your-container-with-buttervolume buttervolume scheduled
+
+**Method 2: Override socket path**::
+
+    # If you know the exact socket path
+    docker run --rm -it \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      -v /run/docker/plugins:/run/docker/plugins \
+      -e BUTTERVOLUME_SOCKET=/run/docker/plugins/<plugin-id>/btrfs.sock \
+      your-container-with-buttervolume buttervolume scheduled
+
+**Creating a CLI container**::
+
+    # Dockerfile
+    FROM python:alpine
+    RUN pip install buttervolume
+    COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker
+
+    # Usage
+    docker build -t buttervolume-cli .
+    docker run --rm -it \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      -v /run/docker/plugins:/run/docker/plugins \
+      buttervolume-cli buttervolume scheduled
+
+
+Migrating existing Docker volumes
+**********************************
+
+To migrate existing Docker volumes to buttervolume, the approach depends on whether your volumes are already on a BTRFS filesystem.
+
+**If /var/lib/docker/volumes is on the same BTRFS partition as /var/lib/buttervolume:**
+
+You can efficiently move or snapshot existing volumes::
+
+    # Stop containers using the volumes first
+    docker stop <container-using-volume>
+    
+    # Method 1: Move the volume (fastest)
+    sudo mv /var/lib/docker/volumes/<volume-name>/_data /var/lib/buttervolume/volumes/<volume-name>
+    
+    # Method 2: Create BTRFS snapshot (preserves original)
+    sudo btrfs subvolume snapshot /var/lib/docker/volumes/<volume-name>/_data /var/lib/buttervolume/volumes/<volume-name>
+
+**If /var/lib/docker/volumes is NOT on BTRFS:**
+
+You need to copy the data::
+
+    # Stop containers using the volumes first
+    docker stop <container-using-volume>
+    
+    # Create buttervolume and copy data
+    docker volume create -d ccomb/buttervolume:latest <volume-name>
+    sudo cp -ar /var/lib/docker/volumes/<volume-name>/_data/* /var/lib/buttervolume/volumes/<volume-name>/
+    
+    # Remove old volume after verifying data integrity
+    docker volume rm <volume-name>
+
+**Update your containers:**
+
+After migration, update your containers to use the new buttervolume driver::
+
+    # In docker-compose.yml
+    volumes:
+      my-data:
+        driver: ccomb/buttervolume:latest
+    
+    # Or with docker run
+    docker run -v my-data:/data --volume-driver=ccomb/buttervolume:latest myimage
+
+**Verification:**
+
+Test that your migrated volumes work correctly before removing the originals::
+
+    # Check volume exists
+    docker volume ls -f driver=ccomb/buttervolume:latest
+    
+    # Test with a temporary container
+    docker run --rm -v <volume-name>:/test --volume-driver=ccomb/buttervolume:latest alpine ls -la /test
+
+
+Migrating from anybox/buttervolume
+**********************************
+
+The plugin was published as ``anybox/buttervolume`` up to version 3.10. A host
+still running it has nothing to move: both plugins keep the volumes, the
+snapshots, the schedule and the ssh keys in the same places under
+``/var/lib/buttervolume``. What stands in the way is the name. Docker records
+the driver of each volume when the volume is created, and that name cannot be
+changed afterwards, so a volume created with ``anybox/buttervolume:latest``
+works only with a plugin of that name.
+
+This leaves two ways, and the second one starts with the first.
+
+**Keep the name, replace the code.** Docker can upgrade a plugin in place: the
+plugin keeps its name and its id, and gets the rootfs of another image. The
+volumes are not touched, the containers only have to be stopped for the
+duration of the upgrade, and nothing changes in the compose files::
+
+    set -e
+    old=anybox/buttervolume:latest
+    new=ccomb/buttervolume:latest
+    volumes=$(docker volume ls -q -f driver=$old)
+    containers=$(for v in $volumes; do docker ps -q -f volume=$v; done | sort -u)
+    [ -z "$containers" ] || docker stop $containers
+    docker plugin disable -f $old
+    docker plugin upgrade --skip-remote-check --grant-all-permissions $old $new
+    docker plugin enable $old
+    [ -z "$containers" ] || docker start $containers
+
+``--skip-remote-check`` is what allows the new image to carry another name
+than the plugin it replaces. From there the plugin is the current one under
+its old name, and the ``buttervolume`` command finds it: in the functions of
+`Install and run as a user`_, replace ``ccomb/buttervolume:latest`` with
+``anybox/buttervolume:latest``.
+
+**Take the new name.** Once the code is the current one, the volumes can be
+recreated under the new driver name, through a snapshot: a volume is deleted
+with its driver, so each one is snapshotted first, and restored under the new
+plugin afterwards. The containers are stopped before the snapshot, so that it
+holds a volume nobody is writing to. A volume referenced by a container cannot
+be deleted, even a stopped one, so the containers go too, and are recreated at
+the end with the new driver name in their configuration. The snapshots stay
+where they are and what they hold is not copied: the restored volume is a
+snapshot of the snapshot, so this costs neither time nor space. An ``SSH_PORT``
+set on the plugin goes away with it, so it is read first and given to the new
+one::
+
+    set -e
+    old=anybox/buttervolume:latest
+    new=ccomb/buttervolume:latest
+    RUNCROOT=/run/docker/runtime-runc/plugins.moby/ # or /run/docker/plugins/runtime-root/plugins.moby/
+    bv () { sudo runc --root $RUNCROOT exec $(docker plugin inspect -f '{{.Id}}' $1) buttervolume "${@:2}"; }
+    volumes=$(docker volume ls -q -f driver=$old)
+    containers=$(for v in $volumes; do docker ps -aq -f volume=$v; done | sort -u)
+    port=$(docker plugin inspect -f '{{range .Settings.Env}}{{println .}}{{end}}' $old | grep ^SSH_PORT=)
+    [ -z "$containers" ] || docker stop $containers
+    bv $old scheduled pause
+    for v in $volumes; do bv $old snapshot $v; done
+    [ -z "$containers" ] || docker rm $containers
+    for v in $volumes; do docker volume rm $v; done
+    docker plugin disable -f $old
+    docker plugin rm $old
+    docker plugin install --grant-all-permissions $new $port
+    for v in $volumes; do bv $new restore $v; done
+    for v in $volumes; do docker volume create -d $new $v; done
+    bv $new scheduled resume
+
+Then change the driver of the volumes in the compose files, and start the
+containers again. With docker compose, leave out the ``docker volume create``
+line: compose refuses a volume it did not create itself, and creates it on
+``docker compose up`` over the subvolume the restore has just put in place.
+
+**Moving to another host** does not need either of the above on the old host:
+the snapshot goes through ``btrfs send`` over ssh, which the old plugin speaks
+as well. Set up the ssh keys as described in `Replicate a snapshot to another
+host`_, then on the old host, with ``old``, ``bv`` and ``volumes`` defined as
+in the script above::
+
+    newhost=node2
+    for v in $volumes; do bv $old send $newhost $(bv $old snapshot $v); done
+
+and on the new host, which has never seen these volumes, with ``bv`` defined
+the same way and ``volumes`` naming what was sent::
+
+    new=ccomb/buttervolume:latest
+    volumes="www db"
+    for v in $volumes; do bv $new restore $v; docker volume create -d $new $v; done
+
+The first send to a host carries the whole volume, since nothing over there
+can serve as a parent; the following ones carry the difference. The old
+snapshots stay on the old host, and nothing depends on them.
 
 
 Migrate to version 4
