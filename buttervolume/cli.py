@@ -417,6 +417,14 @@ def main():
             "  then keep 1 snapshot every 4 hours during 1 day,\n"
             "  then keep 1 snapshot every day during the 1st week\n"
             "  then delete snapshots older than 1 week.\n"
+            "A component can also say how many snapshots it keeps, as X/N.\n"
+            "So 1h/4:1d/3:1w/4 means:\n"
+            "  Keep all snapshots in the last hour,\n"
+            "  then keep 1 snapshot per hour, 4 of them,\n"
+            "  then keep 1 snapshot per day, 3 of them,\n"
+            "  then keep 1 snapshot per week, 4 of them,\n"
+            "  then delete the rest: 11 snapshots, plus the last hour.\n"
+            "A component with no count cannot follow a counted one.\n"
         ),
     )
     parser_purge.add_argument(

@@ -4,6 +4,20 @@ CHANGELOG
 4.0 (unreleased)
 ****************
 
+- A purge pattern can say how many snapshots it keeps at each step, written
+  ``1h/4:1d/3:1w/4``: one an hour four times, one a day three times, one a
+  week four times, eleven snapshots plus the last hour. Until now ``4h:1d:1w``
+  only said where each step stopped, and knowing how many snapshots it kept
+  meant a division in one's head. A counted step starts where the step before
+  it stopped, so its count is exactly what it says rather than a number
+  sharing the age range of what came before it. A component with no count
+  cannot follow a counted one, since it only says where the next step starts
+  and the ages between the two would belong to no step and be kept for good.
+
+  A snapshot exactly as old as the end of the pattern is now deleted rather
+  than kept. Every age belongs to one step and one only, its end excluded,
+  and the end of the last step is where everything dies.
+
 - A purge numbers its timeframes on the calendar instead of on the age of the
   snapshots. The bounds of a timeframe were counted from the moment the purge
   ran, so they moved from one run to the next and the snapshot spared in a
