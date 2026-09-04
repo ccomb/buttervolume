@@ -1140,6 +1140,97 @@ find your previous docker volumes back::
     rm /var/lib/docker/btrfs.img
 
 
+Migrate to version 4
+********************
+
+Version 4 keeps the volumes, the snapshots, the schedule and the ssh keys where
+version 3 left them, so upgrading the plugin is enough and there is nothing to
+move. What changes is what some of it now means, and one of those changes can
+keep a container from starting. Read this before upgrading a host that
+replicates.
+
+**A** ``replicate:`` **line now moves the volume, and not only its snapshots.**
+This is the one to think about. Up to 3.13, such a line sent a snapshot to
+another host every period, and nothing else ever happened. From version 4, the
+volume follows its container: the first container to start takes what the other
+host holds, and the last one to stop sends what this host wrote (see `Move an
+application between hosts`_). Every ``replicate:`` line already in
+``schedule.csv`` changes meaning the day you upgrade, on both hosts.
+
+Two consequences are worth knowing before rather than after:
+
+- a replication host that is down **stops the mount**, so the container does
+  not start. That is deliberate, and `Move an application between hosts`_ says
+  why, but it is a host that used to start regardless;
+- the first container of a volume this host has never received receives the
+  whole volume, and Docker gives a plugin thirty seconds to answer a mount.
+  Give it more patience, or create the volume and let a scheduled round go by
+  before starting the container::
+
+      docker plugin install --disable ccomb/buttervolume
+      docker plugin enable --timeout 600 ccomb/buttervolume
+
+There is no setting that keeps the periodic send without the handover: the
+two are the same line, and a volume either replicates the version 4 way or
+does not replicate. So a volume that must not change hands has its line
+paused before you upgrade, or deleted, and stops being replicated at all::
+
+    buttervolume schedule replicate:node2 pause myvolume
+
+The copy on ``node2`` then ages where it stands. Take a snapshot of the
+volume and send it by hand, with ``buttervolume replicate node2 myvolume``,
+for as long as the line stays paused.
+
+**The ssh host keys change.** Up to 3.13 they were built into the image, so
+every installation of a given tag presented the same identity, and anyone could
+read the private keys out of the public image. Treat the keys published up to
+3.13 as known to everyone. Version 4 makes its own on the first start, in
+``/var/lib/buttervolume/ssh/``, and keeps them from one restart to the next.
+
+Replication itself keeps working across the change, because Buttervolume passes
+``StrictHostKeyChecking=no`` on every ssh call, and that setting lets a
+connection to a host whose key changed proceed. What is left behind is a stale
+entry in the ``known_hosts`` of every host that replicated to the upgraded one,
+recording a key that is now public. Clear it::
+
+    ssh-keygen -R '[node2]:1122' -f /var/lib/buttervolume/ssh/known_hosts
+
+Clearing it takes effect at once, and needs no restart: each transfer starts
+a new ``ssh``, which reads the file then. Note that writing
+``StrictHostKeyChecking yes`` in ``/var/lib/buttervolume/ssh/config`` does not
+make the plugin stricter, and never has: ssh keeps the first value it is given
+for a parameter, and the plugin passes the option on the command line, which
+comes before that file.
+
+**A send can now be refused.** Before sending, the remote host is asked which
+snapshot of the volume last appeared there. When this host has never seen it,
+the volume over there has moved on without this one, and the send is refused
+rather than burying that history. A host coming back from a crash, and a host
+where somebody restored an old snapshot by hand, will say so at every round
+until you receive that snapshot or delete it over there. The error names it.
+
+**An unknown volume option is now refused.** It used to be ignored. A compose
+file or a ``docker volume create`` carrying an option that is neither
+``copyonwrite``, ``compression`` nor an action to schedule will fail to create
+the volume, where it used to create it and say nothing.
+
+**The first restart runs every scheduled job once.** The scheduler now
+remembers in ``/var/lib/buttervolume/lastruns.csv`` when each job last ran,
+instead of forgetting it when the daemon stops. There is no such file the day
+you upgrade, so every job is due: expect one purge and one replication of each
+volume shortly after the restart, and the normal periods afterwards.
+
+**Check your purge patterns.** ``buttervolume scheduled`` now reports a pattern
+written as ``2h:2h`` as deprecated. It still purges as ``2h`` does, so nothing
+breaks, and ``buttervolume scheduled --auto-convert-old-patterns`` rewrites
+them.
+
+**Python 3.11 at least**, if you install Buttervolume as a Python distribution
+rather than as a plugin. The plugin image has carried 3.11 or later since 3.12,
+where it moved from Debian bullseye to Debian 12, so this concerns a local
+installation only.
+
+
 Migrate to version 3
 ********************
 
