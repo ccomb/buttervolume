@@ -10,9 +10,12 @@ CHANGELOG
   only said where each step stopped, and knowing how many snapshots it kept
   meant a division in one's head. A counted step starts where the step before
   it stopped, so its count is exactly what it says rather than a number
-  sharing the age range of what came before it. A component with no count
-  cannot follow a counted one, since it only says where the next step starts
-  and the ages between the two would belong to no step and be kept for good.
+  sharing the age range of what came before it. The last component of a
+  pattern, the age past which everything dies, cannot be a component without
+  a count coming after a counted one: the ages between what the counted step
+  covers and what the last one names would belong to no step and be kept for
+  good. In the middle of a pattern a component without a count is still what
+  it always was, the place where the next step starts.
 
   A snapshot exactly as old as the end of the pattern is now deleted rather
   than kept. Every age belongs to one step and one only, its end excluded,

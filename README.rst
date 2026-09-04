@@ -664,10 +664,15 @@ single specifier is allowed.
 A specifier can also say how many snapshots it keeps, written
 ``<length>/<count>``. A counted specifier starts where the one before it
 stopped, so its count is exactly what it says and the counts add up to what
-the whole pattern keeps. A specifier with no count only says where the next
-one starts, so it cannot follow a counted one: the ages between what the
-counted one covers and what it names would belong to no specifier at all,
-and be kept for good.
+the whole pattern keeps.
+
+A specifier with no count says where the next one starts, and the last
+specifier of a pattern is the age past which everything is deleted. That last
+one is the only one this matters for: after a counted specifier it would
+leave the ages between what the counted one covers and what it names
+belonging to no specifier at all, kept for good, so it is refused. In the
+middle of a pattern a specifier with no count is fine, and ``1h/48:1d:1w``
+keeps one snapshot a day from where the hours stopped up to one week.
 
 Here are a few examples of retention patterns:
 

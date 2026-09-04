@@ -424,7 +424,7 @@ def main():
             "  then keep 1 snapshot per day, 3 of them,\n"
             "  then keep 1 snapshot per week, 4 of them,\n"
             "  then delete the rest: 11 snapshots, plus the last hour.\n"
-            "A component with no count cannot follow a counted one.\n"
+            "The last component cannot be a count-less one after a counted one.\n"
         ),
     )
     parser_purge.add_argument(

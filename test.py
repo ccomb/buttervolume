@@ -2729,6 +2729,8 @@ class TestPurgePattern(unittest.TestCase):
             "1h/4:1d",
             # the counted component already reaches past two days
             "1h/48:1d:2d",
+            # a step of no length would hold every snapshot in one timeframe
+            "0m:1h",
         ):
             with self.assertRaises(ValidationError):
                 Pattern.parse(text)
