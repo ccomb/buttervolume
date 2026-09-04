@@ -1850,20 +1850,10 @@ class TestCase(unittest.TestCase):
         self.assertEqual(jsonloads(resp.body), {"Err": ""})
         self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps)
 
-        cleanup_snapshots()
-        self.create_20_hourly_snapshots(name)
-        # run the purge with a more complex save pattern (2h:4h:8h:16h)
-        nb_snaps = len(os.listdir(SNAPSHOTS_PATH))
-        resp = self.app.post(
-            "/VolumeDriver.Snapshots.Purge",
-            json.dumps({"Name": name, "Pattern": "2h:4h:8h:16h"}),
-        )
-        self.assertEqual(jsonloads(resp.body), {"Err": ""})
-        # check we deleted 14 snapshots
-        self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps - 14)
-
-        cleanup_snapshots()
-        self.create_20_hourly_snapshots(name)
+        # What a pattern of several components keeps is counted in
+        # TestWhatAPurgeCondemns, on a frozen clock: the timeframes are slices
+        # of the calendar now, so the count here would depend on the hour the
+        # test suite happens to run at.
 
         # Test that deprecated duplicate patterns are rejected with helpful message
         resp = self.app.post(
@@ -1906,15 +1896,6 @@ class TestCase(unittest.TestCase):
                 "Err": "Invalid purge pattern: 60m:plop:3000m - Pattern components must be numeric with unit suffix"
             },
         )
-        # run the purge with a more complex multi-component save pattern
-        nb_snaps = len(os.listdir(SNAPSHOTS_PATH))
-        resp = self.app.post(
-            "/VolumeDriver.Snapshots.Purge",
-            json.dumps({"Name": name, "Pattern": "60m:120m:180m:240m:300m"}),
-        )
-        self.assertEqual(jsonloads(resp.body), {"Err": ""})
-        # check we deleted 15 snapshots
-        self.assertEqual(len(os.listdir(SNAPSHOTS_PATH)), nb_snaps - 15)
         cleanup_snapshots()
         self.app.post("/VolumeDriver.Remove", json.dumps({"Name": name}))
 
@@ -2017,22 +1998,24 @@ class TestCase(unittest.TestCase):
         self.assertNotEqual(run(["sh", "-c", btrfs.listing_command("/no/such/dir")]).returncode, 0)
 
     def test_compute_purge(self):
-        now = datetime.now()
+        # A frozen instant: timeframes are slices of the calendar, so what a
+        # purge keeps depends on where the snapshots fall in them.
+        now = datetime(2026, 8, 26, 12, 0, 0)
         snapshots = [
             "foobar@" + (now - timedelta(hours=h, minutes=30)).strftime(DTFORMAT)
             for h in range(5000)
         ]
         purge_list = compute_purges(snapshots, Pattern.parse("1d:1w:4w:1y"), now, DTFORMAT)
         not_purged = set(snapshots) - set(purge_list)
-        self.assertEqual(len(not_purged), 40)
+        self.assertEqual(len(not_purged), 42)
 
     def test_compute_purge2(self):
-        now = datetime.now()
+        now = datetime(2026, 8, 26, 12, 0, 0)
         snapshots = ["foobar@" + (now - timedelta(hours=h)).strftime(DTFORMAT) for h in range(3000)]
         for now in [now + timedelta(hours=h) for h in range(3000)]:
             purge_list = compute_purges(snapshots, Pattern.parse("1d:1w:4w:1y"), now, DTFORMAT)
             snapshots = sorted(set(snapshots) - set(purge_list))
-        self.assertEqual(len(snapshots), 4)
+        self.assertEqual(len(snapshots), 5)
 
     def test_schedule_purge(self):
         # create a volume with a file
@@ -2719,6 +2702,10 @@ class TestWhatAPurgeCondemns(unittest.TestCase):
     def condemned(self, names, pattern):
         return compute_purges(names, Pattern.parse(pattern), self.now, DTFORMAT)
 
+    def spared(self, names, pattern):
+        condemned = set(self.condemned(names, pattern))
+        return [name for name in names if name not in condemned]
+
     def test_a_trace_and_the_snapshot_it_was_made_from_are_spared(self):
         t1, t2 = self.aged(3), self.aged(4)
         names = [f"www@{t1}", f"www@{t1}@node2", f"www@{t2}"]
@@ -2745,6 +2732,59 @@ class TestWhatAPurgeCondemns(unittest.TestCase):
         old, young = self.aged(6), self.aged(5)
         names = [f"www@{old}", f"www@{old}@node2", f"www@{young}"]
         self.assertEqual(self.condemned(names, "4h:1d"), [f"www@{young}"])
+
+    def hourly(self, count, minute):
+        """That many hourly snapshots, taken at that minute of the hour"""
+        return [
+            f"www@{(self.now - timedelta(hours=h, minutes=minute)).strftime(DTFORMAT)}"
+            for h in range(count)
+        ]
+
+    def test_the_snapshot_a_timeframe_spares_does_not_change_with_the_clock(self):
+        """The timeframe is a slice of the calendar, not a slice of the age.
+        Numbered on the age, the four hour timeframes would move by forty
+        minutes here, and every snapshot spared in one would be another."""
+        names = self.hourly(20, 20)
+        forty_minutes_later = self.now + timedelta(minutes=40)
+        self.assertEqual(
+            compute_purges(names, Pattern.parse("4h:1d"), self.now, DTFORMAT),
+            compute_purges(names, Pattern.parse("4h:1d"), forty_minutes_later, DTFORMAT),
+        )
+        # the last four hours in full, then the oldest of each four hour slice
+        self.assertEqual(
+            self.spared(names, "4h:1d"),
+            [names[h] for h in (0, 1, 2, 3, 7, 11, 15, 19)],
+        )
+
+    def test_a_snapshot_too_old_to_keep_does_not_take_a_live_timeframe(self):
+        """A timeframe is a slice of the calendar, so the slice the pattern
+        ends inside holds both a snapshot too old to keep and a younger one
+        still inside the segment. Letting the first claim the slice would
+        delete the second as its duplicate, and spare nothing at all."""
+        one_oclock = self.now + timedelta(hours=1)
+        names = [
+            f"www@{(one_oclock - timedelta(hours=h, minutes=40)).strftime(DTFORMAT)}"
+            for h in range(26)
+        ]
+        condemned = compute_purges(names, Pattern.parse("4h:1d"), one_oclock, DTFORMAT)
+        # names[24] is forty minutes older than the day the pattern keeps, and
+        # names[23] is the oldest one still inside it, in the same four hour slice
+        self.assertIn(names[24], condemned)
+        self.assertNotIn(names[23], condemned)
+
+    def test_each_component_of_a_pattern_thins_its_own_age_segment(self):
+        """The counts the plugin test used to make on a real filesystem, where
+        they depended on the hour the suite ran at"""
+        names = self.hourly(20, -5) + [f"www@{self.now.strftime(DTFORMAT)}@node2", "www@invalid"]
+        trace, undated = names[-2], names[-1]
+        self.assertEqual(
+            self.spared(names, "2h:4h:8h:16h"),
+            [names[h] for h in (0, 1, 2, 4, 8, 12, 16)] + [trace, undated],
+        )
+        self.assertEqual(
+            self.spared(names, "60m:120m:180m:240m:300m"),
+            [names[h] for h in (0, 1, 2, 3, 4, 5)] + [trace, undated],
+        )
 
 
 class TestScheduledJob(unittest.TestCase):

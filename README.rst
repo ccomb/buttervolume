@@ -684,6 +684,14 @@ Here are a few examples of retention patterns:
     deprecated, and ``buttervolume scheduled --auto-convert-old-patterns``
     rewrites it.
 
+Inside a pattern, a timeframe is a slice of the calendar and not a slice of the
+age. A one day timeframe starts at midnight, a four hour one at 0:00, 4:00, 8:00
+and so on, and a one week one on a Thursday, because timeframes are counted from
+the 1st of January 1970. The snapshot kept in a timeframe is the oldest one it
+holds, and it is still the same one at the next purge. Counted from the moment
+the purge runs instead, every boundary would move between two runs and the purge
+would spare a different snapshot each time.
+
 Whatever the pattern says, a purge never deletes what a replication needs: the
 trace of the last send to a host, named ``<volume>@<datetime>@<host>``, and the
 snapshot it was made from, which is the parent the next incremental send is

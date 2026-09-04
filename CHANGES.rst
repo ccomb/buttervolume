@@ -4,6 +4,15 @@ CHANGELOG
 4.0 (unreleased)
 ****************
 
+- A purge numbers its timeframes on the calendar instead of on the age of the
+  snapshots. The bounds of a timeframe were counted from the moment the purge
+  ran, so they moved from one run to the next and the snapshot spared in a
+  timeframe was rarely the same one twice. They are now counted from the 1st of
+  January 1970, in local time, so a one day timeframe starts at midnight, and
+  the snapshot spared is the oldest one of its timeframe. A purge pattern also
+  reads the date of a snapshot to order them, rather than the spelling of its
+  name, which the ``DTFORMAT`` setting can make unsortable.
+
 - The manual no longer describes things the code stopped doing. Its manual
   setup created two of the four directories the plugin expects, so whoever
   preferred it to ``buttervolume init`` got a plugin with nowhere to put a
