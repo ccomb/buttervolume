@@ -4,6 +4,19 @@ CHANGELOG
 4.0 (unreleased)
 ****************
 
+- The manual no longer describes things the code stopped doing. Its manual
+  setup created two of the four directories the plugin expects, so whoever
+  preferred it to ``buttervolume init`` got a plugin with nowhere to put a
+  volume. The alias offered for running the command inside the plugin
+  substituted the plugin id when the alias was defined, so it went stale at
+  the next restart; there is one function now, which asks Docker each time.
+  Setting up BTRFS in a file was written for Debian 8 and did by hand what
+  ``buttervolume init --file`` does in one command. The badge pointed at
+  travis-ci.org, and ``.travis.yml`` goes with it. ``./test_local.sh``, the
+  one to run before a commit, was not mentioned at all, and the purge section
+  said the old ``2h:2h`` spelling was refused everywhere, where in truth only
+  the ``purge`` command refuses it and a schedule still runs it.
+
 - The manual explains how to leave ``anybox/buttervolume`` behind: an in
   place upgrade of the plugin that keeps its name and touches no volume, or a
   snapshot and restore of each volume under the new name, and how to move

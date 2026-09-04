@@ -1,6 +1,6 @@
-.. image:: https://travis-ci.org/ccomb/buttervolume.svg?branch=master
-   :target: https://travis-ci.org/ccomb/buttervolume
-   :alt: Travis state
+.. image:: https://github.com/ccomb/buttervolume/actions/workflows/ci.yml/badge.svg
+   :target: https://github.com/ccomb/buttervolume/actions/workflows/ci.yml
+   :alt: CI state
 
 
 BTRFS Volume plugin for Docker
@@ -84,11 +84,15 @@ The init command must be run as root and automatically creates the required dire
 
 **Manual Setup (Alternative)**
 
-If you prefer manual setup, create the directories for the config and ssh on the host::
+If you prefer manual setup, create the four directories the plugin expects on
+the host. All four are needed: the volumes and their snapshots live in the
+first two, and the plugin writes its configuration and its ssh keys in the
+other two::
 
-    sudo mkdir /var/lib/buttervolume
-    sudo mkdir /var/lib/buttervolume/config
-    sudo mkdir /var/lib/buttervolume/ssh
+    sudo mkdir -p /var/lib/buttervolume/volumes
+    sudo mkdir -p /var/lib/buttervolume/snapshots
+    sudo mkdir -p /var/lib/buttervolume/config
+    sudo mkdir -p /var/lib/buttervolume/ssh
 
 
 Build and run as a contributor
@@ -101,7 +105,9 @@ You first need to create a root filesystem for the plugin, using the provided Do
     git clone https://github.com/ccomb/buttervolume
     ./build.sh
 
-By default the plugin is built for the latest commit (HEAD). You can build another version by specifying it like this::
+By default the plugin is built from the latest commit and tagged
+``ccomb/buttervolume:latest``. You can build another version, which is tagged
+after it, by specifying it like this::
 
     ./build.sh 3.7
 
@@ -114,13 +120,11 @@ Note that this option is only relevant if you use the replication feature betwee
 Now you can enable the plugin, which should start buttervolume in the plugin
 container::
 
-    docker plugin enable ccomb/buttervolume:HEAD
+    docker plugin enable ccomb/buttervolume:latest
 
-You can check it is responding by running a buttervolume command using aliases::
+You can check it is responding by defining `the buttervolume function`_, with
+the tag you enabled, and running::
 
-    export RUNCROOT=/run/docker/runtime-runc/plugins.moby/ # or /run/docker/plugins/runtime-root/plugins.moby/
-    alias drunc="sudo runc --root $RUNCROOT"
-    alias buttervolume="drunc exec -t $(drunc list|tail -n+2|awk '{print $1}') buttervolume"
     buttervolume scheduled
 
 Increase the log level by writing a `/var/lib/buttervolume/config/config.ini` file with::
@@ -154,23 +158,21 @@ Check it is running::
 
     docker plugin ls
 
-Find your runc root, then define useful aliases or functions.
+.. _the buttervolume function:
 
-**Option 1: Using aliases (quick setup)**::
+The ``buttervolume`` command lives inside the plugin, so running it means
+entering the plugin container with ``runc``. Find your runc root, then define
+this function, which you can keep in your ``.bash_profile``::
 
-    export RUNCROOT=/run/docker/runtime-runc/plugins.moby/ # or /run/docker/plugins/runtime-root/plugins.moby/
-    alias drunc="sudo runc --root $RUNCROOT"
-    alias buttervolume="drunc exec -t $(drunc list|tail -n+2|awk '{print $1}') buttervolume"
-
-**Option 2: Using functions (recommended for .bash_profile)**::
-
-    function drunc () {
-      RUNCROOT=/run/docker/runtime-runc/plugins.moby/ # or /run/docker/plugins/runtime-root/plugins.moby/
-      sudo runc --root $RUNCROOT $@
-    }
     function buttervolume () {
-      drunc exec -t $(docker plugin ls --no-trunc  | grep 'ccomb/buttervolume:latest' |  awk '{print $1}') buttervolume $@
+      RUNCROOT=/run/docker/runtime-runc/plugins.moby/ # or /run/docker/plugins/runtime-root/plugins.moby/
+      sudo runc --root $RUNCROOT exec -t \
+        $(docker plugin inspect -f '{{.Id}}' ccomb/buttervolume:latest) buttervolume $@
     }
+
+It asks Docker for the id of the plugin each time it is called, so it still
+works after the plugin has been restarted or upgraded. Write the tag you
+enabled if it is not ``latest``.
 
 And try a buttervolume command::
 
@@ -959,9 +961,14 @@ Here are a few examples of retention patterns:
 
 - ``2h``
     keep all snapshots during the last two hours, then delete older snapshots.
-    Older versions of Buttervolume wrote this pattern ``2h:2h``, which is now
-    refused, and which ``buttervolume scheduled --auto-convert-old-patterns``
-    rewrites in the schedule.
+    Older versions of Buttervolume wrote this pattern ``2h:2h``, and the three
+    ways of purging do not treat that spelling alike. The ``buttervolume
+    purge`` command **refuses** it, and names ``2h`` as the pattern to use
+    instead. A schedule line still accepts it as it is written, and the
+    scheduler converts it at each run, purging exactly as ``2h`` does and
+    logging a warning. ``buttervolume scheduled`` reports such a line as
+    deprecated, and ``buttervolume scheduled --auto-convert-old-patterns``
+    rewrites it.
 
 Whatever the pattern says, a purge never deletes what a replication needs: the
 trace of the last send to a host, named ``<volume>@<datetime>@<host>``, and the
@@ -1060,71 +1067,75 @@ The global job pause/resume feature is implemented separately from the
 individual job pause/resume. So it will not affect your individual
 pause/resume settings.
 
-Copy-on-write
--------------
-
-Copy-On-Write is enabled by default. You can disable it if you really want.
-
-Why disabling copy-on-write? If your docker volume stores databases such as
-PostgreSQL or MariaDB, the copy-on-write feature may hurt performance, though
-the latest kernels have improved a lot. The good news is that disabling
-copy-on-write does not prevent from doing snaphots.
-
-
 Testing
 *******
 
-If your volumes directory is a BTRFS partition or volume, tests can be run
-with::
+There are two ways to run the suite, and they do not cover the same thing.
+
+``./test_local.sh`` runs it against a local BTRFS directory, without Docker and
+without building the plugin. It is the quick one, and the one to run before
+each commit::
+
+    ./test_local.sh                 # the whole suite
+    ./test_local.sh test_snapshot   # a single test
+
+It works in ``/tmp/buttervolume_test``, which has to sit on a BTRFS filesystem;
+point it somewhere else with ``BUTTERVOLUME_TEST_DIR``, and read `Working
+without a BTRFS partition`_ if you have none. The tests that replicate over ssh
+are skipped, since there is no ssh server outside the plugin.
+
+``./test.sh`` builds the plugin image and runs the same suite inside it, which
+is the only way the replication tests actually run::
 
     ./test.sh
+
+It refuses to start while you have uncommitted changes. Your checkout is
+mounted into the container and is what the suite imports, so that guard is what
+keeps the code being tested and the code the image was built from in agreement.
+For the same reason, the optional argument, ``./test.sh 3.7``, chooses the
+version installed in the image, not the code the tests run against, which is
+always your checkout.
+
+The continuous integration runs both.
 
 
 Working without a BTRFS partition
 *********************************
 
-If you have no BTRFS partitions or volumes you can setup a virtual partition
-in a file as follows (tested on Debian 8):
+A BTRFS filesystem does not have to be a partition: it can live in a file,
+mounted through a loop device. That is enough to run the tests, and enough to
+try the plugin, though a file on top of another filesystem is not what you want
+under a production volume.
 
-Setup BTRFS virtual partition::
+``buttervolume init --file`` creates such a file and formats it. Mount it, then
+run ``buttervolume init`` again on the mount point to create the four
+directories the plugin expects there::
 
-    sudo qemu-img create /var/lib/docker/btrfs.img 10G
-    sudo mkfs.btrfs /var/lib/docker/btrfs.img
+    sudo buttervolume init --file /var/lib/docker/btrfs.img --size 10G
+    sudo mkdir -p /var/lib/buttervolume
+    sudo mount -o loop /var/lib/docker/btrfs.img /var/lib/buttervolume
+    sudo buttervolume init
 
-.. note::
+The mount does not survive a reboot until you write it in ``/etc/fstab``::
 
-   you can ignore the error, in fact the new FS is formatted
+    /var/lib/docker/btrfs.img /var/lib/buttervolume btrfs loop,nofail 0 0
 
-Mount the partition somewhere temporarily to create 3 new BTRFS subvolumes::
+``nofail`` matters here: without it, a boot that cannot mount this file fails
+``local-fs.target`` and leaves the machine in emergency mode. A file you may
+delete one day has no business stopping a boot.
 
-    sudo -s
-    mkdir /tmp/btrfs_mount_point
-    mount -o loop /var/lib/docker/btrfs.img /tmp/btrfs_mount_point/
-    btrfs subvolume create /tmp/btrfs_mount_point/snapshots
-    btrfs subvolume create /tmp/btrfs_mount_point/volumes
-    btrfs subvolume create /tmp/btrfs_mount_point/received
-    umount /tmp/btrfs_mount_point/
-    rm -r /tmp/btrfs_mount_point/
+To run the test suite rather than the plugin, no such mount is needed at
+``/var/lib/buttervolume``: mount the file anywhere and name it::
 
-Stop docker, create required mount point and restart docker::
+    sudo mount -o loop /var/lib/docker/btrfs.img /mnt/btrfs
+    BUTTERVOLUME_TEST_DIR=/mnt/btrfs/test ./test_local.sh
 
-    systemctl stop docker
-    mkdir -p /var/lib/buttervolume/volumes
-    mkdir -p /var/lib/buttervolume/snapshots
-    mkdir -p /var/lib/buttervolume/received
-    mount -o loop,subvol=volumes /var/lib/docker/btrfs.img /var/lib/buttervolume/volumes
-    mount -o loop,subvol=snapshots /var/lib/docker/btrfs.img /var/lib/buttervolume/snapshots
-    mount -o loop,subvol=received /var/lib/docker/btrfs.img /var/lib/buttervolume/received
-    systemctl start docker
-
-Once you are done with your test, you can unmount those volumes and you will
-find back your previous docker volumes::
-
+Once you are done, remove the ``/etc/fstab`` line if you wrote one, then stop
+docker before unmounting, so that it does not hold the volumes open, and you
+find your previous docker volumes back::
 
     systemctl stop docker
-    umount /var/lib/buttervolume/volumes
-    umount /var/lib/buttervolume/snapshots
-    umount /var/lib/buttervolume/received
+    umount /var/lib/buttervolume
     systemctl start docker
     rm /var/lib/docker/btrfs.img
 
@@ -1184,12 +1195,11 @@ Then start the new buttervolume 3.x as a managed plugin and check it is started:
     docker plugin install ccomb/buttervolume:latest
     docker plugin ls
 
-Then recreate all your volumes with the new driver and restore them from the snapshots::
+Then recreate all your volumes with the new driver and restore them from the
+snapshots. The ``buttervolume`` command now lives inside the plugin, so define
+`the buttervolume function`_ before running this::
 
     for v in $volumes; do docker volume create -d ccomb/buttervolume:latest $v; done
-    export RUNCROOT=/run/docker/runtime-runc/plugins.moby/ # or /run/docker/plugins/runtime-root/plugins.moby/
-    alias drunc="sudo runc --root $RUNCROOT"
-    alias buttervolume="drunc exec -t $(drunc list|tail -n+2|awk '{print $1}') buttervolume"
     # WARNING : check the the volume you will restore are the correct ones
     for v in $volumes; do buttervolume restore $v; done
 
