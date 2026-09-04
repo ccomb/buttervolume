@@ -661,6 +661,19 @@ list of time length specifiers with a unit. Units can be ``m`` for minutes,
 specifiers must be given from the shortest to the longest, and a pattern of a
 single specifier is allowed.
 
+A specifier can also say how many snapshots it keeps, written
+``<length>/<count>``. A counted specifier starts where the one before it
+stopped, so its count is exactly what it says and the counts add up to what
+the whole pattern keeps.
+
+A specifier with no count says where the next one starts, and the last
+specifier of a pattern is the age past which everything is deleted. That last
+one is the only one this matters for: after a counted specifier it would
+leave the ages between what the counted one covers and what it names
+belonging to no specifier at all, kept for good, so it is refused. In the
+middle of a pattern a specifier with no count is fine, and ``1h/48:1d:1w``
+keeps one snapshot a day from where the hours stopped up to one week.
+
 Here are a few examples of retention patterns:
 
 - ``4h:1d:2w:2y``
@@ -672,6 +685,19 @@ Here are a few examples of retention patterns:
 - ``4h:1w``
     keep all snapshots during the last four hours, then one snapshot every
     four hours during the first week, then delete older snapshots.
+
+- ``1h/4:1d/3:1w/4``
+    keep all snapshots during the last hour, then one snapshot per hour, four
+    of them, then one per day, three of them, then one per week, four of them,
+    then delete the rest. Eleven snapshots plus the last hour, which is what
+    the counts add up to. Writing ``1h/4:1d`` instead is refused: a specifier
+    with no count says where the next one starts, and there is no next one.
+    The pattern meant there is ``1h/4:1d/3``.
+
+    The counts hold in a steady state, with snapshots taken regularly and each
+    length dividing the next one, which ``1h``, ``1d`` and ``1w`` do. With
+    lengths that do not divide each other, such as ``1h/4:5h/3``, a step can
+    hold one snapshot more.
 
 - ``2h``
     keep all snapshots during the last two hours, then delete older snapshots.

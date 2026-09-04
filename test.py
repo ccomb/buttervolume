@@ -2672,20 +2672,66 @@ class TestWhatToRestore(unittest.TestCase):
 class TestPurgePattern(unittest.TestCase):
     """The retention pattern, read without touching a filesystem"""
 
-    def test_a_pattern_is_read_as_the_durations_it_names(self):
-        self.assertEqual(Pattern.parse("2h").minutes, (120,))
-        self.assertEqual(Pattern.parse("30m:2h:1d:1w:1y").minutes, (30, 120, 1440, 10080, 525600))
+    def steps(self, text):
+        return [(step.width, step.start, step.end) for step in Pattern.parse(text).steps]
+
+    def test_a_pattern_is_read_as_the_steps_it_thins(self):
+        self.assertEqual(self.steps("2h"), [])
+        self.assertEqual(Pattern.parse("2h").cutoff, 120)
+        self.assertEqual(
+            self.steps("30m:2h:1d:1w:1y"),
+            [(30, 30, 120), (120, 120, 1440), (1440, 1440, 10080), (10080, 10080, 525600)],
+        )
+        self.assertEqual(Pattern.parse("30m:2h:1d:1w:1y").cutoff, 525600)
         self.assertEqual(str(Pattern.parse("4h:1d")), "4h:1d")
         self.assertIsNone(Pattern.parse("4h:1d").deprecated)
 
+    def test_a_counted_component_starts_where_the_one_before_it_stops(self):
+        """Four hours of hourly snapshots, then three days of daily ones, then
+        four weeks of weekly ones: eleven snapshots, and the counts say so"""
+        self.assertEqual(
+            self.steps("1h/4:1d/3:1w/4"),
+            [(60, 60, 300), (1440, 300, 4620), (10080, 4620, 44940)],
+        )
+        self.assertEqual(Pattern.parse("1h/4:1d/3:1w/4").cutoff, 44940)
+
+    def test_a_component_with_no_count_says_where_the_next_one_starts(self):
+        """Counted or not, one step starts where the one before it stopped"""
+        self.assertEqual(self.steps("1h/48:1d:1w"), [(60, 60, 2940), (1440, 2940, 10080)])
+        self.assertEqual(Pattern.parse("1h/48:1d:1w").cutoff, 10080)
+
     def test_the_old_way_of_writing_a_single_duration_is_read_as_that_duration(self):
         pattern = Pattern.parse("2h:2h")
-        self.assertEqual(pattern.minutes, (120,))
+        self.assertEqual(pattern.steps, ())
+        self.assertEqual(pattern.cutoff, 120)
         self.assertEqual(pattern.text, "2h")
         self.assertEqual(pattern.deprecated, "2h:2h")
 
     def test_a_pattern_nobody_could_apply_is_refused(self):
-        for text in ("", "2h:", "60m:plop:3000m", "5x", "²h", "4h:2h", "2h:120m", "2h:2h:4h"):
+        for text in (
+            "",
+            "2h:",
+            "60m:plop:3000m",
+            "5x",
+            "²h",
+            "4h:2h",
+            "2h:120m",
+            "2h:2h:4h",
+            # a count is a whole number of snapshots, at least one
+            "1h/0",
+            "1h/",
+            "1h/2h",
+            "1h/x",
+            # two components of the same duration, counted this time
+            "1h/4:1h/4",
+            # a last component with no count after a counted one would leave
+            # the ages between five hours and a day belonging to no step
+            "1h/4:1d",
+            # the counted component already reaches past two days
+            "1h/48:1d:2d",
+            # a step of no length would hold every snapshot in one timeframe
+            "0m:1h",
+        ):
             with self.assertRaises(ValidationError):
                 Pattern.parse(text)
 
@@ -2755,6 +2801,19 @@ class TestWhatAPurgeCondemns(unittest.TestCase):
             self.spared(names, "4h:1d"),
             [names[h] for h in (0, 1, 2, 3, 7, 11, 15, 19)],
         )
+
+    def test_a_counted_pattern_keeps_what_its_counts_add_up_to(self):
+        """Ninety days of hourly snapshots, purged every hour on the half hour:
+        1h/4:1d/3:1w/4 promises eleven snapshots, plus the last hour, and the
+        purge that never stops running keeps exactly that"""
+        pattern = Pattern.parse("1h/4:1d/3:1w/4")
+        kept = []
+        for hour in range(90 * 24):
+            moment = self.now + timedelta(hours=hour)
+            kept.append(f"www@{moment.strftime(DTFORMAT)}")
+            condemned = set(compute_purges(kept, pattern, moment + timedelta(minutes=30), DTFORMAT))
+            kept = [name for name in kept if name not in condemned]
+        self.assertEqual(len(kept), 4 + 3 + 4 + 1)
 
     def test_a_snapshot_too_old_to_keep_does_not_take_a_live_timeframe(self):
         """A timeframe is a slice of the calendar, so the slice the pattern
