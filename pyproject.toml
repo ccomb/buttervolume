@@ -25,7 +25,7 @@ dependencies = [
     "bottle",
     "requests-unixsocket2",
     "waitress",
-    "urllib3>=2.7.0,<3.0",
+    "urllib3>=2.8.0,<3.0",
 ]
 
 [project.optional-dependencies]
