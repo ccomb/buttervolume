@@ -1,8 +1,8 @@
 CHANGELOG
 =========
 
-4.0 (unreleased)
-****************
+4.0b1 (2026-10-18)
+******************
 
 - A purge pattern can say how many snapshots it keeps at each step, written
   ``1h/4:1d/3:1w/4``: one an hour four times, one a day three times, one a
