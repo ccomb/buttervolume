@@ -1,6 +1,19 @@
 CHANGELOG
 =========
 
+Unreleased
+**********
+
+- Restoring a snapshot over an existing volume could fail at random with
+  ``Could not compare ... (send: -13, dump: 0)``. To know whether the volume
+  holds something worth keeping, the comparison pipes ``btrfs send`` into
+  ``btrfs receive --dump``, which leaves as soon as it has read the end of the
+  stream. The last read of the send moves nothing, but Linux checks that its
+  output still has a reader before it sees the input is finished, and kills
+  the send with SIGPIPE when the dump has already left. The dump only exits
+  with 0 once it has read the whole stream, so that SIGPIPE no longer counts
+  as a failure. Any other failure of either side still does.
+
 4.0b1 (2026-10-18)
 ******************
 
