@@ -49,11 +49,8 @@ def underline(lines, i):
 
 def section(lines, title):
     """The lines of the section with this title, its title underlined as a top section."""
-    levels = []
     for i in range(len(lines)):
         char = underline(lines, i)
-        if char and char not in levels:
-            levels.append(char)
         if lines[i] == title and char:
             end = next(
                 (
@@ -102,7 +99,10 @@ def credentials():
         auths = json.load(f).get("auths", {})
     auth = auths.get("https://index.docker.io/v1/", {}).get("auth")
     if not auth:
-        raise SystemExit("No Docker Hub credentials in ~/.docker/config.json: run docker login")
+        raise SystemExit(
+            "No Docker Hub credentials in ~/.docker/config.json: run docker login, "
+            "without a credsStore there, which keeps them out of this file"
+        )
     return base64.b64decode(auth).decode().split(":", 1)
 
 
