@@ -1,8 +1,8 @@
 CHANGELOG
 =========
 
-Unreleased
-**********
+4.0b2 (2026-11-01)
+******************
 
 - Restoring a snapshot over an existing volume could fail at random with
   ``Could not compare ... (send: -13, dump: 0)``. To know whether the volume
