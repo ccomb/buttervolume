@@ -1,8 +1,10 @@
 """Publish the Docker Hub page of ccomb/buttervolume from README.rst.
 
-Docker Hub refuses a description over 25000 characters and the manual is
-longer, so the page carries the README up to its Usage section, then a link
-to the full manual on GitHub. Needs pandoc and a prior `docker login`.
+Whoever reads the Docker Hub page has already chosen the plugin and is setting
+it up, so the page carries the README sections that serve that: what the plugin
+does, then installing, creating volumes and configuring it, and a link to the
+full manual for the rest. Taking them from the README, by title, keeps one
+manual to maintain. Needs pandoc and a prior `docker login`.
 """
 
 import base64
@@ -13,25 +15,81 @@ import urllib.request
 
 REPOSITORY = "https://hub.docker.com/v2/repositories/ccomb/buttervolume/"
 SUMMARY = "BTRFS volume plugin for Docker: snapshot, restore, clone and replicate volumes"
-FULL_MANUAL = """
+LIMIT = 25000  # characters Docker Hub accepts in a full description
+TITLE = "BTRFS Volume plugin for Docker"
+BLOCKS = ("What can Buttervolume do?", "How does it work?")
+SECTIONS = (
+    "Prerequisites",
+    "Install and run as a user",
+    "Upgrade",
+    "Running the plugin",
+    "Creating and deleting volumes",
+    "Configure",
+)
+FULL_MANUAL = """\
 Full manual
 ***********
 
-Usage, snapshots, replication, synchronization, scheduling and configuration
-are described in the `full manual on GitHub
-<https://github.com/ccomb/buttervolume#usage>`_.
+Snapshots, replication, synchronization and scheduling are described in the
+`full manual on GitHub <https://github.com/ccomb/buttervolume#usage>`_.
 """
-# Directives that mean nothing outside the full manual.
-DROPPED = (".. contents::", ".. _the buttervolume function:")
+UNDERLINES = "=*-~^"
 
 
-def page(readme):
-    """The README up to its Usage section, in Markdown."""
-    head = readme.split("\nUsage\n*****\n")[0]
-    kept = [line for line in head.splitlines() if not line.startswith(DROPPED)]
-    rst = "\n".join(kept) + "\n" + FULL_MANUAL
+def underline(lines, i):
+    """The character underlining line i when it is a title, else None."""
+    if i + 1 >= len(lines) or not lines[i].strip():
+        return None
+    below = lines[i + 1]
+    char = below[:1]
+    if char in UNDERLINES and below == char * len(below) and len(below) >= len(lines[i]):
+        return char
+    return None
+
+
+def section(lines, title):
+    """The lines of the section with this title, its title underlined as a top section."""
+    levels = []
+    for i in range(len(lines)):
+        char = underline(lines, i)
+        if char and char not in levels:
+            levels.append(char)
+        if lines[i] == title and char:
+            end = next(
+                (
+                    j
+                    for j in range(i + 2, len(lines))
+                    if underline(lines, j)
+                    and UNDERLINES.index(underline(lines, j)) <= UNDERLINES.index(char)
+                ),
+                len(lines),
+            )
+            return [title, "*" * len(title)] + lines[i + 2 : end]
+    raise ValueError(f"README.rst has no section titled {title!r}")
+
+
+def block(lines, bold):
+    """The lines of the paragraph introduced by **bold**, up to the next one."""
+    start = lines.index(f"**{bold}**")  # raises ValueError when the README lost it
+    end = next(
+        (j for j in range(start + 1, len(lines)) if lines[j].startswith(("**", ".. "))),
+        len(lines),
+    )
+    return lines[start:end]
+
+
+def rst_page(readme):
+    """The Docker Hub page in reStructuredText, assembled from the README."""
+    lines = readme.splitlines()
+    parts = [[TITLE, "=" * len(TITLE), ""]]
+    parts += [block(lines, bold) for bold in BLOCKS]
+    parts += [section(lines, title) for title in SECTIONS]
+    return "\n".join(line for part in parts for line in part) + "\n\n" + FULL_MANUAL
+
+
+def markdown(rst):
     return subprocess.run(
-        ["pandoc", "-f", "rst", "-t", "gfm"],
+        ["pandoc", "--fail-if-warnings", "-f", "rst", "-t", "gfm"],
         input=rst,
         capture_output=True,
         text=True,
@@ -59,9 +117,9 @@ def call(method, url, body, token=None):
 
 def main():
     with open("README.rst") as f:
-        description = page(f.read())
-    if len(description) > 25000:
-        raise SystemExit(f"The Docker Hub page is {len(description)} characters, over 25000")
+        description = markdown(rst_page(f.read()))
+    if len(description) > LIMIT:
+        raise SystemExit(f"The Docker Hub page is {len(description)} characters, over {LIMIT}")
     user, password = credentials()
     login = "https://hub.docker.com/v2/users/login"
     token = call("POST", login, {"username": user, "password": password})["token"]
