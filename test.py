@@ -3227,5 +3227,72 @@ class TestAComparisonReadTheWholeStream(unittest.TestCase):
             self.assertFalse(btrfs.compared_whole_stream(send_code, dump_code))
 
 
+class TestDockerHubPage(unittest.TestCase):
+    """The Docker Hub page is the part of the README a user setting up the plugin needs."""
+
+    README = """\
+Title
+=====
+
+**What will it allow you to do?**
+
+- sell it
+
+**What can Buttervolume do?**
+
+- snapshot
+
+.. contents::
+
+Install and run as a user
+*************************
+
+docker plugin install
+
+Usage
+*****
+
+Running the plugin
+------------------
+
+volume options
+
+Running the plugin locally or in legacy mode
+--------------------------------------------
+
+sudo buttervolume run
+"""
+
+    def setUp(self):
+        import publish_dockerhub_description as page
+
+        self.page = page
+        self.lines = self.README.splitlines()
+
+    def test_a_section_stops_at_the_next_one_of_its_level(self):
+        self.assertEqual(
+            self.page.section(self.lines, "Running the plugin"),
+            ["Running the plugin", "******************", "", "volume options", ""],
+        )
+
+    def test_a_block_stops_before_the_contents_directive(self):
+        self.assertEqual(
+            self.page.block(self.lines, "What can Buttervolume do?"),
+            ["**What can Buttervolume do?**", "", "- snapshot", ""],
+        )
+
+    def test_a_title_the_readme_lost_is_an_error(self):
+        with self.assertRaises(ValueError):
+            self.page.section(self.lines, "Configure")
+        with self.assertRaises(ValueError):
+            self.page.block(self.lines, "How does it work?")
+
+    def test_the_readme_has_every_part_of_the_page(self):
+        with open(join(os.path.dirname(os.path.abspath(__file__)), "README.rst")) as f:
+            rst = self.page.rst_page(f.read())
+        self.assertNotIn("What will Buttervolume allow you to do?", rst)
+        self.assertLess(len(rst), self.page.LIMIT)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
