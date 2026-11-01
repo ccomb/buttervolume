@@ -18,6 +18,7 @@ snapshot's name is the clock of whichever host took it.
 
 import contextlib
 import os
+import signal
 import tempfile
 import time
 from dataclasses import dataclass
@@ -184,6 +185,20 @@ def subvolumes_in(directory):
     return sorted(listed, key=lambda s: s.rank)
 
 
+def compared_whole_stream(send_code, dump_code):
+    """Did ``receive --dump`` read the whole stream that ``send`` wrote?
+
+    The dump only exits with 0 once it has read the end command, since an
+    early end of the stream is an error. Then the send may still be killed
+    by SIGPIPE: its last splice, which has nothing left to move, checks that
+    the output pipe has a reader before it checks that the input is empty
+    and closed (``splice_pipe_to_pipe`` in Linux). When the dump has already
+    left, that empty splice is the one that fails, after everything was
+    delivered.
+    """
+    return dump_code == 0 and send_code in (0, -signal.SIGPIPE)
+
+
 class Subvolume:
     """basic wrapper around the CLI"""
 
@@ -273,7 +288,7 @@ class Subvolume:
                     f"{COMPARE_TIMEOUT}s: {send_stderr_file.read().decode(errors='replace')}"
                 ) from None
 
-            if send_proc.returncode != 0 or dump_proc.returncode != 0:
+            if not compared_whole_stream(send_proc.returncode, dump_proc.returncode):
                 send_stderr_file.seek(0)
                 raise BtrfsError(
                     f"Could not compare {self.path} to {other_path} "

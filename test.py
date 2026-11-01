@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -3212,6 +3213,18 @@ def temporary_directory(path):
         yield path
     finally:
         shutil.rmtree(path)
+
+
+class TestAComparisonReadTheWholeStream(unittest.TestCase):
+    """What the exit codes of the send and of the dump say about a comparison"""
+
+    def test_a_send_killed_by_sigpipe_after_the_dump_read_the_end_still_compared(self):
+        self.assertTrue(btrfs.compared_whole_stream(0, 0))
+        self.assertTrue(btrfs.compared_whole_stream(-signal.SIGPIPE, 0))
+
+    def test_any_other_failure_is_no_comparison(self):
+        for send_code, dump_code in ((1, 0), (-signal.SIGKILL, 0), (0, 1), (-signal.SIGPIPE, 1)):
+            self.assertFalse(btrfs.compared_whole_stream(send_code, dump_code))
 
 
 if __name__ == "__main__":
