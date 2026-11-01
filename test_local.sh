@@ -50,13 +50,17 @@ fi
 
 echo "✓ Directory is on BTRFS filesystem"
 
-# Export environment variables for the test
-export BUTTERVOLUME_SKIP_BTRFS_CHECK=1
-export BUTTERVOLUME_LOCAL_TEST=1
-export BUTTERVOLUME_VOLUMES_PATH="$LOCAL_TEST_DIR/volumes/"
-export BUTTERVOLUME_SNAPSHOTS_PATH="$LOCAL_TEST_DIR/snapshots/"
-export BUTTERVOLUME_TEST_REMOTE_PATH="$LOCAL_TEST_DIR/received/"
-export BUTTERVOLUME_LAST_RUNS="$LOCAL_TEST_DIR/lastruns.csv"
+# The settings of the tests, handed to sudo by name: sudo -E does not carry
+# them everywhere (the sudo-rs of Ubuntu 26.04 drops them), and the tests
+# then work in /var/lib/buttervolume and try the ssh tests they must skip.
+settings=(
+    BUTTERVOLUME_SKIP_BTRFS_CHECK=1
+    BUTTERVOLUME_LOCAL_TEST=1
+    BUTTERVOLUME_VOLUMES_PATH="$LOCAL_TEST_DIR/volumes/"
+    BUTTERVOLUME_SNAPSHOTS_PATH="$LOCAL_TEST_DIR/snapshots/"
+    BUTTERVOLUME_TEST_REMOTE_PATH="$LOCAL_TEST_DIR/received/"
+    BUTTERVOLUME_LAST_RUNS="$LOCAL_TEST_DIR/lastruns.csv"
+)
 
 # Setup virtual environment if it doesn't exist
 if [ ! -d ".venv" ]; then
@@ -68,10 +72,10 @@ fi
 # Run specific test if provided, otherwise run all tests
 if [ "$1" != "" ]; then
     echo "Running specific test: $1"
-    sudo -E .venv/bin/python -m pytest test.py::TestCase::$1 -v
+    sudo env "${settings[@]}" .venv/bin/python -m pytest test.py::TestCase::$1 -v
 else
     echo "Running all tests..."
-    sudo -E .venv/bin/python -m pytest test.py -v
+    sudo env "${settings[@]}" .venv/bin/python -m pytest test.py -v
 fi
 
 cleanup_test_dir
