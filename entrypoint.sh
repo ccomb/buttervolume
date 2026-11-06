@@ -29,7 +29,13 @@ for type in rsa ecdsa ed25519; do
             || echo "buttervolume: could not write the $type ssh host key in /var/lib/buttervolume/ssh" >&2
     fi
 done
+# Replication only ever logs in with a key, so no other way in is offered.
+# Alpine's sshd, built without PAM, let anyone in on an account whose password
+# field is "*" (root's, here) as soon as another account had a real password,
+# by sending a password longer than 256 bytes. Accepting keys only keeps that
+# door shut whatever the installed openssh, and whatever accounts exist.
 /usr/sbin/sshd \
+    -o AuthenticationMethods=publickey \
     -h /root/.ssh/ssh_host_rsa_key \
     -h /root/.ssh/ssh_host_ecdsa_key \
     -h /root/.ssh/ssh_host_ed25519_key \

@@ -1,6 +1,16 @@
 CHANGELOG
 =========
 
+4.0b3 (unreleased)
+******************
+
+- The ssh server inside the plugin refuses passwords and only accepts keys,
+  the only way replication ever logs in. Alpine's sshd, which the plugin runs,
+  could be entered without any password on an account that has none, root
+  included, as soon as another account had one (Alpine advisory of
+  2026-11-05). The plugin as shipped had no such second account, but adding
+  one was enough to open root on port 1122 to anyone who could reach it.
+
 4.0b2 (2026-11-01)
 ******************
 
