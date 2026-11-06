@@ -462,7 +462,8 @@ included in the plugin.
 **SSH Configuration Requirements:**
 
 - SSH keys and configuration must be in ``/var/lib/buttervolume/ssh/`` (NOT in ``~/.ssh/``)
-- SSH keys must be present and authorized on target hosts  
+- SSH keys must be present and authorized on target hosts: the ssh server of
+  the plugin accepts no password, only keys
 - Enable ``StrictHostKeyChecking no`` in ``/var/lib/buttervolume/ssh/config``
 - **Important**: Restart Docker daemons after any SSH configuration changes
 
