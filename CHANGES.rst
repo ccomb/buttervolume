@@ -1,6 +1,18 @@
 CHANGELOG
 =========
 
+4.0b4 (unreleased)
+******************
+
+- Buttervolume no longer takes the snapshots another tool keeps in its
+  directory for its own, such as ``www@inc_...`` left there by a backup.
+  Restoring a volume by its name took the last snapshot by alphabetical order,
+  so a backup made at night came before the snapshot taken by hand in the
+  morning. It now takes the last one created, and refuses with its name when
+  that one is not ours. And a volume identical to such a snapshot was no
+  longer snapshotted on schedule, its state kept only in a snapshot whose
+  lifetime the other tool decides.
+
 4.0b3 (2026-11-07)
 ******************
 

@@ -50,6 +50,7 @@ from buttervolume.config import (
 )
 from buttervolume.names import (
     Snapshot,
+    latest_snapshot,
     new_snapshot,
     parsed,
     sent_snapshots,
@@ -60,6 +61,7 @@ from buttervolume.names import (
     validate_hostname,
     validate_snapshot_name,
     validate_volume_name,
+    written_by_buttervolume,
 )
 from buttervolume.purge import Pattern, compute_purges
 from buttervolume.schedule import Entry, Job, Replicate, read_schedule, write_schedule
@@ -1011,14 +1013,17 @@ def snapshots_here(volume_name):
 
     Pairs of the name and whether it came from another host. The traces of
     the sends are left out: their content is that of their own snapshot, but
-    the next send would refuse one if named. The order is the one BTRFS
-    created them in, not the one the dates in their names spell.
+    the next send would refuse one if named, and so are the snapshots another
+    tool keeps in the same directory. The order is the one BTRFS created them
+    in, not the one the dates in their names spell.
     """
     return [
         (listed.name, listed.received)
         for listed in btrfs.subvolumes_in(SNAPSHOTS_PATH)
         for s in parsed([listed.name])
-        if s.volume == volume_name and not s.host
+        if s.volume == volume_name
+        and not s.host
+        and written_by_buttervolume(listed.name, listed.received, DTFORMAT)
     ]
 
 
@@ -1226,11 +1231,11 @@ def restore(snapshot_name, target_name=None):
     """
     if "@" not in snapshot_name:
         # we're passing the name of the volume. Use the latest snapshot.
-        volume_name = validate_volume_name(snapshot_name)
-        snapshots = snapshots_of(volume_name, os.listdir(SNAPSHOTS_PATH))
-        if not snapshots:
-            raise SnapshotNotFoundError(f"No snapshots found for volume '{volume_name}'")
-        snapshot_name = snapshots[-1]
+        snapshot_name = latest_snapshot(
+            validate_volume_name(snapshot_name),
+            [(s.name, s.received) for s in btrfs.subvolumes_in(SNAPSHOTS_PATH)],
+            DTFORMAT,
+        )
 
     snapshot_path = snapshotpath(snapshot_name)
     if not os.path.exists(snapshot_path):

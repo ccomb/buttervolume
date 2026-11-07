@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass, replace
 from datetime import datetime
 
-from buttervolume import ValidationError
+from buttervolume import SnapshotNotFoundError, ValidationError
 
 
 def validate_volume_name(name):
@@ -165,6 +165,47 @@ def snapshots_of(volume, names):
     later, when it becomes a path, and then the answer says so.
     """
     return sorted(n for n in names if n.startswith(volume + "@"))
+
+
+def written_by_buttervolume(name, received, dtformat):
+    """Whether buttervolume put this snapshot here, by taking it or by receiving it.
+
+    Another tool may keep its own snapshots in the same directory, under the
+    same ``www@`` prefix: a backup naming its own ``www@inc_<parent>_<date>``.
+    Buttervolume never picks one of those on its own. Nothing says when that
+    tool deletes it, and a snapshot answered as holding what a volume held
+    must not vanish behind our back. What buttervolume takes is dated in the
+    date format; what it receives was sent by another buttervolume.
+    """
+    try:
+        Snapshot.parse(name).taken_at(dtformat)
+    except ValidationError:
+        return False
+    except ValueError:
+        return received
+    return True
+
+
+def latest_snapshot(volume, listed, dtformat):
+    """The snapshot of this volume that a restore by volume name brings back.
+
+    Pure. ``listed`` are the snapshots of the directory as ``(name, received)``,
+    in the order they appeared there. The answer is the last of this volume's
+    to have appeared, whatever the names say: ``www@inc_...`` sorts after any
+    ``www@2026-...``, however old it is. When buttervolume did not write that
+    last one, the answer is a refusal and not the one before it: the caller
+    asked for the latest state, and would get an older one believing it new.
+    """
+    own = [(n, r) for n, r in listed if n.startswith(volume + "@")]
+    if not own:
+        raise SnapshotNotFoundError(f"No snapshots found for volume '{volume}'")
+    name, received = own[-1]
+    if not written_by_buttervolume(name, received, dtformat):
+        raise ValidationError(
+            f"The latest snapshot of '{volume}' is '{name}', which buttervolume "
+            "did not write: name the snapshot to restore"
+        )
+    return name
 
 
 def sent_snapshots(volume, host, names):
