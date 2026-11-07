@@ -2645,6 +2645,9 @@ class TestNames(unittest.TestCase):
         # inc_ sorts after any date, yet the snapshot taken after it wins
         listed = [(older, False), (theirs, False), (newer, False), ("other@x", False)]
         self.assertEqual(latest_snapshot("www", listed, DTFORMAT), newer)
+        # the trace left by sending it appears after it, and is not a snapshot
+        traced = [*listed, (f"{newer}@node2", False)]
+        self.assertEqual(latest_snapshot("www", traced, DTFORMAT), newer)
         # when theirs is the last one, the one before it is no answer either
         with self.assertRaisesRegex(ValidationError, "did not write"):
             latest_snapshot("www", [(older, False), (theirs, False)], DTFORMAT)

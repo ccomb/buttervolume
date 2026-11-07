@@ -196,7 +196,13 @@ def latest_snapshot(volume, listed, dtformat):
     last one, the answer is a refusal and not the one before it: the caller
     asked for the latest state, and would get an older one believing it new.
     """
-    own = [(n, r) for n, r in listed if n.startswith(volume + "@")]
+    # the trace of a send holds what its snapshot holds, but no send would
+    # take its name; a name that cannot be read is kept, to be refused below
+    own = [
+        (n, r)
+        for n, r in listed
+        if n.startswith(volume + "@") and not any(s.host for s in parsed([n]))
+    ]
     if not own:
         raise SnapshotNotFoundError(f"No snapshots found for volume '{volume}'")
     name, received = own[-1]
