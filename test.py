@@ -3227,6 +3227,15 @@ class TestAComparisonReadTheWholeStream(unittest.TestCase):
             self.assertFalse(btrfs.compared_whole_stream(send_code, dump_code))
 
 
+class TestTheClientNeedsNoTestDependency(unittest.TestCase):
+    """The command line, installed alone, must start without webtest"""
+
+    def test_the_cli_imports_without_webtest(self):
+        code = "import sys; sys.modules['webtest'] = None; import buttervolume.cli"
+        result = run([sys.executable, "-c", code], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
 class TestDockerHubPage(unittest.TestCase):
     """The Docker Hub page is the part of the README a user setting up the plugin needs."""
 
