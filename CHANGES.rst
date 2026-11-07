@@ -11,6 +11,11 @@ CHANGELOG
   2026-11-05). The plugin as shipped had no such second account, but adding
   one was enough to open root on port 1122 to anyone who could reach it.
 
+- The command line installed on its own, without the test dependencies,
+  stopped at once on ``No module named 'webtest'``: the module that talks to
+  the plugin imported the test client even outside the tests. A CI job that
+  snapshots and restores volumes through the plugin could not use it.
+
 4.0b2 (2026-11-01)
 ******************
 

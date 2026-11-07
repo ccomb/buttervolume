@@ -28,7 +28,6 @@ import urllib.parse
 import requests_unixsocket
 from bottle import app
 from requests.exceptions import ConnectionError
-from webtest import TestApp
 
 import buttervolume.plugin  # noqa: F401  this import is what posts the routes
 from buttervolume.config import USOCKET
@@ -104,6 +103,8 @@ def _url(urlpath):
 def _post(urlpath, payload=None, test=False):
     body = json.dumps(payload) if payload is not None else None
     if test:
+        from webtest import TestApp  # a test dependency: never needed in production
+
         return TestApp(app).post(urlpath, body)
     return Session().post(_url(urlpath), body)
 
