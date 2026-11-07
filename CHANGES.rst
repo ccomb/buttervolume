@@ -1,7 +1,7 @@
 CHANGELOG
 =========
 
-4.0b3 (unreleased)
+4.0b3 (2026-11-07)
 ******************
 
 - The ssh server inside the plugin refuses passwords and only accepts keys,
