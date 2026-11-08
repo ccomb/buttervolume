@@ -1,7 +1,7 @@
 CHANGELOG
 =========
 
-4.0b4 (unreleased)
+4.0b4 (2026-11-08)
 ******************
 
 - Buttervolume no longer takes the snapshots another tool keeps in its
