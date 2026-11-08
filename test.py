@@ -38,11 +38,13 @@ from buttervolume.config import (
 from buttervolume.init import init_btrfs
 from buttervolume.names import (
     Snapshot,
+    latest_snapshot,
     new_snapshot,
     sent_snapshots,
     snapshot_to_fetch,
     snapshot_to_restore,
     snapshots_of,
+    written_by_buttervolume,
 )
 from buttervolume.purge import Pattern, compute_purges
 from buttervolume.schedule import (
@@ -1303,6 +1305,51 @@ class TestCase(unittest.TestCase):
             self.assertEqual(f.read(), "modified foobar")
         # cleanup
         btrfs.Subvolume(join(SNAPSHOTS_PATH, legacy)).delete()
+
+    def test_a_snapshot_another_tool_keeps_here_is_never_chosen_for_us(self):
+        """A backup keeping www@inc_... next to ours, as an S3 backup does"""
+        name = PREFIX_TEST_VOLUME + uuid.uuid4().hex
+        path = join(VOLUMES_PATH, name)
+        self.create_a_volume_with_a_file(name)
+        first = jsonloads(self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body)
+        with open(join(path, "foobar"), "w") as f:
+            f.write("night")
+        theirs = f"{name}@inc_2026-11-06_01-30-51_2026-11-07_01-31-19"
+        btrfs.Subvolume(path).snapshot(join(SNAPSHOTS_PATH, theirs), readonly=True)
+        try:
+            # the volume holds what theirs holds, and is snapshotted all the
+            # same: a state kept only in theirs lasts as long as they decide
+            again = jsonloads(
+                self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body
+            )
+            self.assertTrue(again["Created"])
+            self.assertNotEqual(again["Snapshot"], first["Snapshot"])
+            # once theirs is the last, a restore by volume name says so
+            btrfs.Subvolume(join(SNAPSHOTS_PATH, theirs)).delete()
+            btrfs.Subvolume(path).snapshot(join(SNAPSHOTS_PATH, theirs), readonly=True)
+            resp = jsonloads(
+                self.app.post("/VolumeDriver.Snapshot.Restore", json.dumps({"Name": name})).body
+            )
+            self.assertIn(theirs, resp["Err"])
+            # a snapshot taken after theirs is the latest, though theirs sorts after it
+            with open(join(path, "foobar"), "w") as f:
+                f.write("morning")
+            morning = jsonloads(
+                self.app.post("/VolumeDriver.Snapshot", json.dumps({"Name": name})).body
+            )["Snapshot"]
+            with open(join(path, "foobar"), "w") as f:
+                f.write("broken")
+            resp = jsonloads(
+                self.app.post("/VolumeDriver.Snapshot.Restore", json.dumps({"Name": name})).body
+            )
+            self.assertEqual(resp["Err"], "")
+            with open(join(path, "foobar")) as f:
+                self.assertEqual(f.read(), "morning")
+            # and what the volume held is kept in a snapshot of ours, never theirs
+            self.assertNotIn("@inc_", resp["VolumeBackup"])
+            self.assertNotEqual(resp["VolumeBackup"], morning)
+        finally:
+            btrfs.Subvolume(join(SNAPSHOTS_PATH, theirs)).delete()
 
     def test_the_trace_of_a_send_cannot_be_sent(self):
         """Sending it back would name its own trace, and only fail once sent"""
@@ -2582,6 +2629,30 @@ class TestNames(unittest.TestCase):
         # a name we could not have written is still shown: hiding it would let
         # the caller take www@t1 for the most recent snapshot of the volume
         self.assertEqual(snapshots_of("www", ["www@t 2", "www@t1"]), ["www@t 2", "www@t1"])
+
+    def test_a_snapshot_another_tool_keeps_here_is_not_taken_for_ours(self):
+        """A backup that keeps www@inc_... next to ours"""
+        ours, theirs = "www@2026-11-08T10:00:00.100000", "www@inc_2026-11-06_01-30-51"
+        self.assertTrue(written_by_buttervolume(ours, False, DTFORMAT))
+        self.assertFalse(written_by_buttervolume(theirs, False, DTFORMAT))
+        # what another buttervolume sent us, under its own date format
+        self.assertTrue(written_by_buttervolume("www@20261108", True, DTFORMAT))
+        self.assertFalse(written_by_buttervolume("www@2026 11 08", True, DTFORMAT))
+
+    def test_a_restore_by_volume_name_takes_the_last_to_appear_or_refuses(self):
+        older, newer = "www@2026-11-07T02:00:00.000000", "www@2026-11-08T10:00:00.000000"
+        theirs = "www@inc_2026-11-06_01-30-51"
+        # inc_ sorts after any date, yet the snapshot taken after it wins
+        listed = [(older, False), (theirs, False), (newer, False), ("other@x", False)]
+        self.assertEqual(latest_snapshot("www", listed, DTFORMAT), newer)
+        # the trace left by sending it appears after it, and is not a snapshot
+        traced = [*listed, (f"{newer}@node2", False)]
+        self.assertEqual(latest_snapshot("www", traced, DTFORMAT), newer)
+        # when theirs is the last one, the one before it is no answer either
+        with self.assertRaisesRegex(ValidationError, "did not write"):
+            latest_snapshot("www", [(older, False), (theirs, False)], DTFORMAT)
+        with self.assertRaisesRegex(Exception, "No snapshots"):
+            latest_snapshot("www", [("other@x", False)], DTFORMAT)
 
     def test_the_parent_of_a_send_is_the_last_one_sent_to_that_host(self):
         names = ["www@t1", "www@t2", "www@t1@node2", "www@t2@node2", "other@t3@node2"]

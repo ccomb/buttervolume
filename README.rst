@@ -307,8 +307,12 @@ Restore a snapshot
 You can restore a snapshot as a volume. What the volume holds is kept as a
 snapshot first, then the volume is deleted and replaced with the snapshot. If
 you provide a volume name instead of a snapshot, the **latest snapshot** is
-restored. So no data is lost if you do something wrong. Please take care of
-stopping the container before restoring a snapshot::
+restored: the last one to have appeared on this host, taken here or received,
+whatever the dates in the names say. When that last one was put there by
+another tool, a backup keeping its own ``<volume>@...`` beside ours, the
+restore refuses and names it, rather than going back to an older one. So no
+data is lost if you do something wrong. Please take care of stopping the
+container before restoring a snapshot::
 
     buttervolume restore <snapshot>
 
